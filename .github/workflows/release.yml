@@ -58,15 +58,17 @@ jobs:
       - name: Check distribution metadata
         run: python -m twine check dist/*
 
-      # The full suite exercises every format parser, so it runs with all format
-      # extras installed plus pytest/ruff. The `accel` extra is deliberately NOT
-      # installed: it pulls ziglang (~400 MB) and the C extension is only an
-      # optional optimisation - tests/test_c_speedup.py skips its C-specific cases
-      # and still asserts the pure-Python scan never changes slicing output.
+      # The full suite exercises every format parser, so it installs the `test`
+      # extra (all format extras + xlwt, which is needed to *write* legacy .xls
+      # fixtures since xlrd only reads them) plus pytest/ruff. The `accel` extra
+      # is deliberately NOT installed: it pulls ziglang (~400 MB) and the C
+      # extension is only an optional optimisation - tests/test_c_speedup.py
+      # skips its C-specific cases and still asserts the pure-Python scan never
+      # changes slicing output.
       - name: Run the full test suite (all format extras)
         run: |
           python -m pip install --disable-pip-version-check \
-            -e ".[all]" pytest ruff
+            -e ".[test]" pytest ruff
           python -m pytest tests -q
           python -m ruff check smart_slice tests
 

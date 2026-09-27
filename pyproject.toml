@@ -70,8 +70,18 @@ accel = ["setuptools>=68", "ziglang>=0.11"]
 all = [
     "smart-slice[markup,office,pdf,mail,archive,ebook,image,keywords,fastuuid]",
 ]
-dev = [
+# Test-only dependencies.  Everything else the suite needs is covered by `all`,
+# because the tests build real fixtures for each format.  `xlwt` is the one
+# addition: `xlrd` only *reads* the legacy .xls binary format, so writing a .xls
+# fixture (test_fidelity.py's multi-sheet / merged-cell case) needs the writer
+# package.  It is never imported by smart_slice itself - declaring it here keeps
+# it out of every runtime extra.
+test = [
     "smart-slice[all]",
+    "xlwt>=1.3",
+]
+dev = [
+    "smart-slice[test]",
     "smart-slice[accel]",
     "pytest>=7.0",
     "pytest-cov>=4.0",

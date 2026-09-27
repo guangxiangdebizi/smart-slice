@@ -1,10 +1,11 @@
 # smart-slice
 
-**面向 RAG 管线的保真优先文档切片库。** 输入约 30 种文件格式，输出检索可用的段落，且原始字符全程可回溯、不丢失。
+**面向 RAG 管线的保真优先文档切片库。** 输入 30 个 handler 覆盖的 197 种文件扩展名，输出检索可用的段落，且原始字符全程可回溯、不丢失。
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-119%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-220%20passed-brightgreen.svg)]()
+[![PyPI version](https://img.shields.io/pypi/v/smart-slice.svg)](https://pypi.org/project/smart-slice/)
 
 ```python
 from smart_slice import slice_text
@@ -59,6 +60,9 @@ pip install smart-slice          # 核心：文本/markdown/配置/源码类文�
 pip install smart-slice[all]     # 下方全部格式
 ```
 
+已发布至 PyPI：[`smart-slice`](https://pypi.org/project/smart-slice/)。`0.3.0` 的 wheel 与 sdist 同时挂在
+[GitHub Release](https://github.com/guangxiangdebizi/smart-slice/releases/tag/v0.3.0)，由 `.github/workflows/release.yml` 从对应 tag 提交构建。
+
 按需 extras：
 
 | Extra | 解锁格式 |
@@ -73,7 +77,8 @@ pip install smart-slice[all]     # 下方全部格式
 | `ocr` | 文档内嵌图片的本地 OCR（RapidOCR，运行时另需开启） |
 | `keywords` | jieba 关键词辅助函数 |
 | `fastuuid` | 时间有序的图片 id（内置纯 Python 回退） |
-| `dev` | all + pytest、ruff、mypy |
+| `test` | `all` 全部内容 + `xlwt`（测试套件需要它来**写** .xls 夹具，`xlrd` 只能读） |
+| `dev` | `test` + accel、pytest、pytest-cov、ruff、mypy |
 
 运行时调用 `smart_slice.missing_dependencies()` 可列出尚缺哪些 extras。
 

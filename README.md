@@ -4,8 +4,8 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-216%20passed-brightgreen.svg)]()
-[![PyPI](https://img.shields.io/badge/pypi-smart--slice-orange.svg)]()
+[![Tests](https://img.shields.io/badge/tests-220%20passed-brightgreen.svg)]()
+[![PyPI version](https://img.shields.io/pypi/v/smart-slice.svg)](https://pypi.org/project/smart-slice/)
 
 ```python
 from smart_slice import slice_text
@@ -62,6 +62,11 @@ pip install smart-slice                 # core: text/markdown/config/source file
 pip install smart-slice[all]            # every format below
 ```
 
+Published on PyPI as [`smart-slice`](https://pypi.org/project/smart-slice/). The
+`0.3.0` wheel and sdist are also attached to the
+[GitHub Release](https://github.com/guangxiangdebizi/smart-slice/releases/tag/v0.3.0),
+built from the tagged commit by `.github/workflows/release.yml`.
+
 Targeted extras:
 
 | Extra | Unlocks |
@@ -76,7 +81,8 @@ Targeted extras:
 | `ocr` | local OCR for embedded images (RapidOCR, opt-in at runtime) |
 | `keywords` | jieba-backed keyword helpers |
 | `fastuuid` | time-sortable image ids (a pure-Python fallback is built in) |
-| `dev` | all + pytest, ruff, mypy |
+| `test` | everything in `all` plus `xlwt`, which the test suite needs to *write* legacy `.xls` fixtures (`xlrd` only reads them) |
+| `dev` | `test` + accel, pytest, pytest-cov, ruff, mypy |
 
 Call `smart_slice.missing_dependencies()` at runtime to see exactly which extras would unlock more formats.
 

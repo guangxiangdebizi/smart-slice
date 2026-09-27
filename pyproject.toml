@@ -1,0 +1,107 @@
+[build-system]
+requires = ["hatchling>=1.20"]
+build-backend = "hatchling.build"
+
+[project]
+name = "smart-slice"
+version = "0.1.0"
+description = "Fidelity-first document slicing for RAG pipelines: ~30 formats in, retrieval-ready paragraphs out."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+keywords = [
+    "rag",
+    "chunking",
+    "text-splitting",
+    "document-parsing",
+    "knowledge-base",
+    "llm",
+    "embedding",
+    "markdown",
+    "pdf",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Indexing",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+# The core is deliberately tiny: text decoding + the slicer.  Every format parser
+# is an optional extra so a plain ``pip install smart-slice`` stays light, and
+# handlers degrade to "unsupported" (never crash) when their parser is absent.
+dependencies = [
+    "charset-normalizer>=3.0",
+]
+
+[project.optional-dependencies]
+# prose / web formats (html, mhtml, epub, eml, msg, mobi all go through markdownify+bs4)
+markup = ["markdownify>=0.13", "beautifulsoup4>=4.12"]
+office = [
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "openpyxl>=3.1",
+    "xlrd>=2.0",
+    "olefile>=0.46",
+    "striprtf>=0.0.26",
+]
+pdf = ["pypdf>=4.0", "pillow>=10.0"]
+mail = ["extract-msg>=0.48"]
+archive = ["py7zr>=0.20"]
+ebook = ["mobi>=0.3.3"]
+image = ["pillow>=10.0", "pillow-heif>=0.13"]
+# local OCR for images embedded in documents (opt-in at runtime too, see SMART_SLICE_OCR_ENABLED)
+ocr = ["rapidocr-onnxruntime>=1.3", "pillow>=10.0"]
+# jieba-backed keyword extraction helpers
+keywords = ["jieba>=0.42"]
+# time-sortable image ids (a pure-python fallback is used when absent)
+fastuuid = ["uuid-utils>=0.6"]
+all = [
+    "smart-slice[markup,office,pdf,mail,archive,ebook,image,keywords,fastuuid]",
+]
+dev = [
+    "smart-slice[all]",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.5",
+    "mypy>=1.8",
+]
+
+[project.scripts]
+smart-slice = "smart_slice.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/guangxiangdebizi/smart-slice"
+Repository = "https://github.com/guangxiangdebizi/smart-slice"
+Issues = "https://github.com/guangxiangdebizi/smart-slice/issues"
+Changelog = "https://github.com/guangxiangdebizi/smart-slice/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["smart_slice"]
+
+[tool.hatch.build.targets.sdist]
+include = ["smart_slice", "tests", "docs", "examples", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+check_untyped_defs = false

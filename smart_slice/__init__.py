@@ -1,0 +1,321 @@
+# coding=utf-8
+"""smart-slice - fidelity-first document slicing for RAG pipelines.
+
+Turn a document into retrieval-ready paragraphs: extract the text of ~30 file
+formats, cut it along its own structure (heading tree, then blank lines, then a
+length budget), and keep every original character reachable.
+
+Quick start::
+
+    from smart_slice import slice_bytes, slice_text
+
+    paragraphs = slice_text("# Chapter\\n\\nbody text", limit=1000)
+    # [{'title': 'Chapter', 'content': 'body text'}]
+
+    paragraphs = slice_bytes(open("report.pdf", "rb").read(), "report.pdf", limit=1000)
+
+Design notes
+------------
+*Fidelity before cleverness.*  No cleaning step deletes source text: heading
+markers are stripped only at line starts and only outside code fences, table
+headers are *appended* to continuation chunks rather than rewritten into them,
+oversized rows are re-split instead of truncated.
+
+*Structure before length.*  ``limit`` is a budget, not a grid: the slicer walks
+the heading tree first, then falls back to sentence boundaries, then to a hard
+character cut.
+
+*No framework.*  Pure library: no Django, no ORM, no network, no logging
+configuration.  Errors are :class:`~smart_slice.exceptions.SliceError` with an
+HTTP-style ``code``; images extracted from documents are handed to a callback
+instead of being persisted.
+"""
+import os
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Union
+
+from ._validation import ParserLimits
+from .exceptions import (
+    ParseError,
+    ResourceLimitError,
+    SliceError,
+    UnsupportedFormatError,
+)
+from .handlers import (
+    HANDLER_EXTENSIONS,
+    SPLIT_HANDLERS,
+    BaseSplitHandle,
+    FileBufferHandle,
+    missing_dependencies,
+)
+from .patterns import (
+    BLANK_LINE,
+    DEFAULT_PATTERNS,
+    LITERAL_PATTERNS,
+    MARKDOWN_HEADINGS,
+    patterns_for,
+)
+from .service import (
+    BytesSplitFile,
+    LazyImageTextExtractor,
+    build_image_text_extractor,
+    normalize_split_rows,
+    replace_image_file_ids,
+    split_document,
+)
+from .types import ImageAsset, Paragraph, SplitResult
+
+__version__ = "0.1.0"
+
+__all__ = [
+    "__version__",
+    # primary API
+    "slice_bytes",
+    "slice_text",
+    "slice_path",
+    "split_document",
+    "chunk",
+    "chunk_paragraphs",
+    # extraction only (no slicing)
+    "extract_text",
+    # text-level building blocks
+    "SplitModel",
+    "smart_split_paragraph",
+    "filter_special_char",
+    "MarkChunkHandle",
+    # configuration / introspection
+    "ParserLimits",
+    "SPLIT_HANDLERS",
+    "HANDLER_EXTENSIONS",
+    "missing_dependencies",
+    "supported_extensions",
+    "detect_handler",
+    "patterns_for",
+    "MARKDOWN_HEADINGS",
+    "DEFAULT_PATTERNS",
+    "BLANK_LINE",
+    "LITERAL_PATTERNS",
+    # types
+    "ImageAsset",
+    "Paragraph",
+    "SplitResult",
+    "BaseSplitHandle",
+    "FileBufferHandle",
+    "BytesSplitFile",
+    "LazyImageTextExtractor",
+    "build_image_text_extractor",
+    "normalize_split_rows",
+    "replace_image_file_ids",
+    # errors
+    "SliceError",
+    "ParseError",
+    "UnsupportedFormatError",
+    "ResourceLimitError",
+]
+
+#: Default paragraph budget (characters).  Small enough that a paragraph maps to
+#: a few hundred tokens - the range where embedding models are most reliable -
+#: and large enough that a normal prose paragraph is not cut at all.
+DEFAULT_LIMIT = 1000
+
+
+def slice_text(
+    text: str,
+    *,
+    limit: int = DEFAULT_LIMIT,
+    patterns: Optional[Sequence[Any]] = None,
+    with_filter: bool = False,
+    name: str = "document.md",
+) -> List[Paragraph]:
+    """Slice an in-memory string into ``[{title, content}]`` paragraphs.
+
+    :param text:        source text (markdown headings are recognised)
+    :param limit:       maximum characters per paragraph
+    :param patterns:    heading/paragraph regexes; ``None`` = the markdown default
+    :param with_filter: strip line-initial heading markers and collapse blank runs
+    :param name:        only used to pick the default pattern family
+
+    ``with_filter`` defaults to False here: slicing your own string is usually a
+    deliberate act and the caller keeps the raw text.  The file entry points keep
+    the platform default of True.
+    """
+    return split_document(
+        name,
+        text.encode("utf-8"),
+        limit=limit,
+        pattern_list=list(patterns) if patterns is not None else None,
+        with_filter=with_filter,
+        normalize=True,
+    )
+
+
+def slice_bytes(
+    content: bytes,
+    name: str,
+    *,
+    limit: int = DEFAULT_LIMIT,
+    patterns: Optional[Sequence[Any]] = None,
+    with_filter: bool = True,
+    normalize: bool = True,
+    save_image: Optional[Callable[[List[ImageAsset]], Any]] = None,
+    image_text_extractor: Optional[Callable[[bytes, str], str]] = None,
+    fallback_title: Optional[str] = None,
+    progress_hook: Optional[Callable[[], None]] = None,
+) -> Union[List[Paragraph], SplitResult]:
+    """Slice a document from its raw bytes.
+
+    :param content:       complete file bytes
+    :param name:          file name - decides which handler runs
+    :param limit:         maximum characters per paragraph (required by design:
+                          no implicit default that could silently drift)
+    :param patterns:      custom heading regexes; ``None`` = per-format default
+    :param with_filter:   pass through to the slicer's cleaning stage
+    :param normalize:     True -> flat ``[{title, content}]``;
+                          False -> the handler's raw structure (nested groups for
+                          multi-sheet workbooks and archives, which previews want)
+    :param save_image:    callback receiving :class:`ImageAsset` objects extracted
+                          from the document; may return ``{new_id: existing_id}``
+                          to remap references after deduplication
+    :param image_text_extractor: ``(image_bytes, image_name) -> str`` OCR hook.
+                          Not installed by default; see
+                          :func:`build_image_text_extractor`.
+    :param fallback_title: title used for paragraphs that have none (only with
+                          ``normalize=True``)
+    :param progress_hook: zero-argument callback fired before each handler, each
+                          archive member and each OCR call - use it as a heartbeat
+                          while parsing large files
+    :raises SliceError:   nothing supports the format, or parsing failed
+
+    This is the entry point every other layer in the package funnels through.
+    """
+    return split_document(
+        name,
+        content,
+        limit=limit,
+        pattern_list=list(patterns) if patterns is not None else None,
+        with_filter=with_filter,
+        save_image=save_image,
+        image_text_extractor=image_text_extractor,
+        normalize=normalize,
+        fallback_title=fallback_title,
+        progress_hook=progress_hook,
+    )
+
+
+def slice_path(
+    path: Union[str, "os.PathLike[str]"],
+    *,
+    limit: int = DEFAULT_LIMIT,
+    name: Optional[str] = None,
+    **kwargs: Any,
+) -> Union[List[Paragraph], SplitResult]:
+    """Read a file from disk and slice it.  See :func:`slice_bytes` for keywords.
+
+    :param name: override the file name used for handler dispatch (defaults to the
+                 path's basename)
+    """
+    resolved = os.fspath(path)
+    with open(resolved, "rb") as handle:
+        content = handle.read()
+    return slice_bytes(content, name or os.path.basename(resolved), limit=limit, **kwargs)
+
+
+def extract_text(content: bytes, name: str, *, save_image: Optional[Callable] = None) -> str:
+    """Extraction only: return the document's text without slicing it.
+
+    Mirrors ``get_content`` on the handlers - useful for previews, for feeding an
+    LLM a whole (small) document, or for bundling archive members into one file.
+    """
+    file = BytesSplitFile(name, content)
+    buf = FileBufferHandle()
+    buf.buffer = content
+    get_buffer = buf.get_buffer
+    for handler in SPLIT_HANDLERS:
+        if not handler.support(file, get_buffer):
+            continue
+        sink = save_image or (lambda images: None)
+        from .handlers.image import ImageSplitHandle
+
+        if isinstance(handler, ImageSplitHandle):
+            # extended signature: OCR extractor + buffer access are keyword args
+            return handler.get_content(file, sink, get_buffer=get_buffer)
+        return handler.get_content(file, sink)
+    extension = ("." + name.rsplit(".", 1)[1].lower()) if "." in name else ""
+    raise UnsupportedFormatError(f"Unsupported file format{f': {extension}' if extension else ''}")
+
+
+def detect_handler(name: str, content: Optional[bytes] = None) -> Optional[str]:
+    """Return the handler class name that would claim this input, or ``None``.
+
+    Introspection helper for CLIs, tests and "why did my file parse like that"
+    debugging.  Passing ``content`` enables the content-sniffing handlers.
+    """
+    file = BytesSplitFile(name, content or b"")
+    buf = FileBufferHandle()
+    if content is not None:
+        buf.buffer = content
+    get_buffer = buf.get_buffer
+    for handler in SPLIT_HANDLERS:
+        try:
+            if handler.support(file, get_buffer):
+                return type(handler).__name__
+        except Exception:  # noqa: BLE001 - a failed sniff must not break detection
+            continue
+    return None
+
+
+def supported_extensions() -> Dict[str, List[str]]:
+    """Map handler name -> extensions it is documented for."""
+    return {name: list(exts) for name, exts in HANDLER_EXTENSIONS.items()}
+
+
+def chunk_paragraphs(
+    paragraphs: Iterable[Paragraph],
+    *,
+    chunk_size: int = 256,
+    handler: Optional[Any] = None,
+) -> List[str]:
+    """Chunk paragraphs down to an embedding window.
+
+    Slicing yields semantic paragraphs; embedding models still need fixed-size
+    input.  The paragraph stays the retrieval unit, the chunk the vector unit.
+
+    :param paragraphs: ``[{title, content}]`` from :func:`slice_bytes`
+    :param chunk_size: target chunk length in characters
+    :param handler:    any :class:`~smart_slice.chunking.IChunkHandle`
+    """
+    from .chunking import MarkChunkHandle
+
+    handle = handler or MarkChunkHandle()
+    texts = []
+    for row in paragraphs:
+        content = row.get("content") if isinstance(row, dict) else row
+        if isinstance(content, str) and content.strip():
+            texts.append(content)
+    return handle.handle(texts, chunk_size)
+
+
+def chunk(text: str, *, chunk_size: int = 256, handler: Optional[Any] = None) -> List[str]:
+    """Chunk a single string (convenience wrapper over :func:`chunk_paragraphs`)."""
+    return chunk_paragraphs([{"title": "", "content": text}], chunk_size=chunk_size, handler=handler)
+
+
+# re-exported lazily so ``import smart_slice`` stays cheap (jieba / parsers are
+# only imported when the caller actually reaches for them)
+def __getattr__(name: str) -> Any:
+    if name == "SplitModel":
+        from .chunker import SplitModel
+
+        return SplitModel
+    if name == "smart_split_paragraph":
+        from .chunker import smart_split_paragraph
+
+        return smart_split_paragraph
+    if name == "filter_special_char":
+        from .chunker import filter_special_char
+
+        return filter_special_char
+    if name == "MarkChunkHandle":
+        from .chunking import MarkChunkHandle
+
+        return MarkChunkHandle
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

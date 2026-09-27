@@ -1,0 +1,12 @@
+# Normalise to LF in the repository; let checkouts use native endings.
+* text=auto eol=lf
+
+# Binary assets - never touch line endings
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.whl binary
+*.gz binary

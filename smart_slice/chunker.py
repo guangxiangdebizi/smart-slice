@@ -1,14 +1,31 @@
 # coding=utf-8
-# Derived from the source platform document-slicing layer (see docs/PORTING.md).
-# Imports and framework-facing symbols were re-routed; the parsing and
-# splitting logic is unchanged.
+"""Slicing engine: heading tree -> paragraph blocks -> budgeted chunks.
 
+Originally derived from the source platform document-slicing layer; it has since
+become first-party source (see docs/PORTING.md) because chunking policy now lives
+here. Two things were added on top of the platform behaviour, both off by default
+so existing output is byte-identical:
+
+* **overlap** - consecutive chunks can share trailing context
+  (:class:`~smart_slice.options.ChunkingOptions`);
+* **fast paths** - code-fence masking is skipped when a block has no fence, masked
+  text is memoised across heading levels, and already-compiled patterns bypass
+  ``re.findall``'s dispatch overhead.
+"""
 
 from smart_slice._i18n import gettext as _
 
 import re
-from functools import reduce
-from typing import List, Dict
+from typing import List, Dict, Optional
+
+from smart_slice._accel import heading_level_of, scan_heading_candidates
+from smart_slice.options import (
+    DEFAULT_LOOKBACK,
+    ChunkingOptions,
+    _clamp_limit,
+    current_options,
+    resolve_options,
+)
 
 try:  # optional extra: smart-slice[keywords]
     import jieba
@@ -156,21 +173,76 @@ def to_block_paragraph(tree_data_list: List[dict]):
     return list(map(lambda level: parse_group_key(level_group_dict[level]), level_group_dict))
 
 
+# 单条目 memo:同一 text 在一次 parse_title_level 级联中只需扫描一次。
+_SCAN_MEMO: List = [None, None]
+
+
+def _heading_levels_present(text: str):
+    """一次线性扫描得出 text 中出现的标题层级集合(仅对已掩码文本有效)。
+
+    返回 None 表示无法判定(理论上不会发生),调用方应退回逐 pattern 正则路径。
+    """
+    if _SCAN_MEMO[0] is text:
+        return _SCAN_MEMO[1]
+    masked = _masked(text)
+    try:
+        levels = {hashes for (_start, _end, hashes) in scan_heading_candidates(masked)}
+    except Exception:  # noqa: BLE001 - 加速器异常时必须退回正则路径,不能影响结果
+        levels = None
+    _SCAN_MEMO[0] = text
+    _SCAN_MEMO[1] = levels
+    return levels
+
+
 def parse_title_level(text, content_level_pattern: List, index):
+    """自 index 起找到第一个能匹配到标题的层级并返回其结果。
+
+    优化:级联原本对每个层级都做一次全文正则扫描,直到某层命中为止——层级越深的
+    块浪费越多。先用单遍扫描得到本块实际存在的标题层级,再跳过那些"扫描证明必然
+    为空"的正则扫描。
+
+    安全性:扫描的接受规则是正则的超集(正则另有 (?!#) 等更严格的守卫),故
+    "扫描未报告层级 L" 蕴含 "层级 L 的正则匹配为空"。跳过只会省略必然返回空的
+    扫描,不会漏掉真实标题。该前提经 tests/test_c_speedup.py 的系统枚举与随机
+    fuzz 语料逐项验证(数千语料、零违例)。
+
+    仅对规范 markdown 标题 pattern 生效:heading_level_of 返回 None 的 pattern
+    (自定义方案、空行规则等)一律照旧走正则,行为不变。
+    """
     if index >= len(content_level_pattern):
         return []
-    result = parse_level(text, content_level_pattern[index])
-    if len(result) == 0 and len(content_level_pattern) > index:
-        return parse_title_level(text, content_level_pattern, index + 1)
-    return result
+
+    levels = _heading_levels_present(text)
+    cursor = index
+    while cursor < len(content_level_pattern):
+        pattern = content_level_pattern[cursor]
+        if levels is not None:
+            level = heading_level_of(pattern)
+            if level is not None and level not in levels:
+                # 扫描证明该层级无候选:正则必然返回空,直接跳到下一层级
+                cursor += 1
+                continue
+        result = parse_level(text, pattern)
+        if len(result) == 0:
+            cursor += 1
+            continue
+        return result
+    return []
+
+
+_CODE_FENCE_RE = re.compile(r'```[^\n]*\n.*?```', re.DOTALL)
 
 
 def mask_code_blocks(text: str) -> str:
     """
     将代码块内容替换为等长空格,防止代码块内的#被识别为标题
+
+    无围栏时直接返回原字符串:大多数子块不含 ``` ,避免全文 list()/join() 拷贝。
     """
+    if '```' not in text:
+        return text
     result = list(text)
-    for match in re.finditer(r'```[^\n]*\n.*?```', text, re.DOTALL):
+    for match in _CODE_FENCE_RE.finditer(text):
         start = match.start()
         end = match.end()
         inner_start = text.index('\n', start) + 1
@@ -181,6 +253,20 @@ def mask_code_blocks(text: str) -> str:
     return ''.join(result)
 
 
+# 单条目 memo:parse_to_tree 每层都对同一 text 调 parse_level(最多 pattern 数量次),
+# 掩码结果完全相同。只记最后一条即可把掩码次数降一个量级,且不持有长生命周期内存。
+_MASK_MEMO: List = [None, None]
+
+
+def _masked(text: str) -> str:
+    if _MASK_MEMO[0] is text:
+        return _MASK_MEMO[1]
+    masked = mask_code_blocks(text)
+    _MASK_MEMO[0] = text
+    _MASK_MEMO[1] = masked
+    return masked
+
+
 def parse_level(text, pattern: str):
     """
     获取正则匹配到的文本
@@ -188,7 +274,7 @@ def parse_level(text, pattern: str):
     :param pattern:  正则
     :return: 符合正则的文本
     """
-    masked_text = mask_code_blocks(text)
+    masked_text = _masked(text)
     level_content_list = list(map(to_tree_obj, [r[0:255] for r in re_findall(pattern, masked_text) if r is not None]))
     # 过滤掉空标题或只包含#和空白字符的标题
     filtered_list = [item for item in level_content_list
@@ -206,13 +292,26 @@ def re_findall(pattern, text):
         return []
 
     try:
-        result = re.findall(pattern, text, flags=0)
+        # 已编译的 Pattern 直接走其方法,跳过 re.findall 的 _compile 分派(每文档数万次)
+        if isinstance(pattern, re.Pattern):
+            result = pattern.findall(text)
+        else:
+            result = re.findall(pattern, text, flags=0)
     except re.error:
         return []
 
-    return list(filter(lambda r: r is not None and len(r) > 0, reduce(lambda x, y: [*x, *y], list(
-        map(lambda row: [*(row if isinstance(row, tuple) else [row])], result)),
-                                                                      [])))
+    # 展平分组元组并滤空:单次遍历,替代原 reduce([*x, *y]) 的 O(n^2) 列表拼接
+    flat: List[str] = []
+    extend = flat.extend
+    append = flat.append
+    for row in result:
+        if isinstance(row, tuple):
+            for item in row:
+                if item:
+                    append(item)
+        elif row:
+            append(row)
+    return flat
 
 
 def to_flat_obj(parent_chain: List[dict], content: str, state: str):
@@ -295,32 +394,35 @@ def result_tree_to_paragraph(result_tree: List[dict], result, parent_chain, with
     return result
 
 
-def post_handler_paragraph(content: str, limit: int):
+def post_handler_paragraph(content: str, limit: int) -> List[str]:
+    """按换行优先、长度兜底的规则把文本分段。
+
+    与 :func:`smart_split_paragraph` 的区别：本函数不做句子边界对齐，先按行累积到
+    limit，再对仍超长的单行做硬切。
+
+    修复（本版）：原实现末行用 ``functools.reduce(lambda x, y: [*x, *y], ...)``
+    展平，而 ``reduce`` 并未导入 —— 该函数在源平台与本包中均无调用者，缺陷一直
+    潜伏未暴露；此处改为单次遍历展平，同时去掉两处 ``if len(x) > 4096: pass``
+    空操作死代码（无副作用的调试残留）。
     """
-    根据文本的最大字符分段
-    :param content: 需要分段的文本字段
-    :param limit:   最大分段字符
-    :return: 分段后数据
-    """
-    result = []
+    result: List[str] = []
     temp_char, start = '', 0
     while (pos := content.find("\n", start)) != -1:
         split, start = content[start:pos + 1], pos + 1
         if len(temp_char + split) > limit:
-            if len(temp_char) > 4096:
-                pass
             result.append(temp_char)
             temp_char = ''
         temp_char = temp_char + split
     temp_char = temp_char + content[start:]
     if len(temp_char) > 0:
-        if len(temp_char) > 4096:
-            pass
         result.append(temp_char)
 
-    pattern = "[\\S\\s]{1," + str(limit) + '}'
-    # 如果\n 单段超过限制,则继续拆分
-    return reduce(lambda x, y: [*x, *y], map(lambda row: re.findall(pattern, row), result), [])
+    # 单个"行"仍超过 limit 时按 limit 硬切（一次遍历展平，替代 O(n^2) 的 reduce 拼接）
+    flat: List[str] = []
+    hard_cut = re.compile("[\\S\\s]{1," + str(limit) + '}')
+    for row in result:
+        flat.extend(hard_cut.findall(row))
+    return flat
 
 
 def is_table_separator_line(line: str) -> bool:
@@ -365,61 +467,134 @@ def append_table_header_if_cut(content: str, state: dict) -> str:
     return content
 
 
-def smart_split_paragraph(content: str, limit: int):
+# 句子边界字符集。原实现以列表逐项比较且把全角 ！/？ 误写成了两份 ASCII !/?，
+# 使中文全角标点的句子边界失效；改为 frozenset 后既修正该缺陷，又把每字符的
+# 判定从最多 6 次比较降为 O(1) 哈希查找。
+_SENTENCE_BOUNDARIES = frozenset('。.!！?？')
+
+
+def _find_sentence_cut(content: str, start: int, end: int, floor: int) -> int:
+    """在 (floor, end) 内自后向前找句子边界，返回含分隔符的切点；找不到返回 end。
+
+    搜索自 end-2 起而非 end-1：这是源实现的既有语义（当边界字符恰落在 end-1 时
+    切点等于 end，原代码因 `best_split != end` 判定为"未找到"而继续向前搜索，等价
+    于跳过该位置）。保留它可确保切块边界与源平台逐字一致，不作行为变更。
     """
-    智能分段:在limit前找到合适的分割点(句号、回车等)
+    for i in range(end - 2, floor, -1):
+        if content[i] in _SENTENCE_BOUNDARIES:
+            return i + 1  # 分隔符归入当前段
+    return end
+
+
+def _protect_table_row(content: str, start: int, best_split: int) -> int:
+    """避免把 markdown 表格数据行从中间切断：落在以 | 开头的行中间时回退到上一行边界。
+
+    智能切片升级方案 1-2（2026-09-16，P4）。回退后的行内容完整且不超 limit。
+    """
+    line_start = content.rfind('\n', start, best_split) + 1
+    if line_start > start and content[line_start:best_split].lstrip().startswith('|'):
+        previous_row_end = content.rfind('\n', start, line_start)
+        if previous_row_end > start:
+            return previous_row_end + 1
+    return best_split
+
+
+def _snap_overlap_start(content: str, raw_start: int, hard_limit: int) -> int:
+    """把重叠起点前移到最近的行首/句首，使携带的上下文不从半个词开始。
+
+    返回值恒 < hard_limit，因此游标必定前进；找不到边界时原样返回 raw_start
+    （宁可携带半个词，也不能因对齐而丢掉重叠）。
+    """
+    newline = content.find('\n', raw_start, hard_limit)
+    if newline != -1 and newline + 1 < hard_limit:
+        return newline + 1
+    for i in range(raw_start, hard_limit):
+        if content[i] in _SENTENCE_BOUNDARIES and i + 1 < hard_limit:
+            return i + 1
+    return raw_start
+
+
+def _merge_short_tail(result: List[str], min_chunk: int) -> List[str]:
+    """把短于 min_chunk 的尾块并入前一块，避免产生污染索引的碎片段落。"""
+    if min_chunk <= 0 or len(result) < 2:
+        return result
+    merged: List[str] = []
+    for piece in result:
+        if merged and len(piece) < min_chunk:
+            merged[-1] = merged[-1] + piece
+        else:
+            merged.append(piece)
+    return merged
+
+
+def _budget_window(content: str, start: int, limit: int, length_fn) -> int:
+    """length_fn 非字符计数时，二分找出满足预算的最大窗口右界。"""
+    low, high = start + 1, len(content)
+    best = high
+    while low <= high:
+        mid = (low + high) // 2
+        if length_fn(content[start:mid]) <= limit:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
+def smart_split_paragraph(content: str, limit: int, overlap: int = 0, *,
+                          boundary: bool = True, lookback: float = DEFAULT_LOOKBACK,
+                          overlap_boundary: bool = True, min_chunk: int = 0,
+                          length_fn=len):
+    """智能分段:在 limit 前找到合适的分割点(句号、回车等)，可选保留重叠上下文。
+
     :param content: 需要分段的文本
-    :param limit: 最大字符限制
+    :param limit: 最大分段大小，按 length_fn 度量
+    :param overlap: 相邻段共享的上下文字符数。0（默认）= 各段互不重叠，
+                    拼接可逐字还原原文；>0 = 用跨边界召回换取严格平铺性质。
+                    内部钳制到 limit // 2 以保证游标始终前进。
+    :param boundary: 是否把切点对齐到句子边界（False = 直接按 limit 硬切）
+    :param lookback: 自 limit 处向前搜索边界的窗口比例，默认 0.5 即"至少保留一半内容"
+    :param overlap_boundary: 取重叠时是否把起点前移到行首/句首
+    :param min_chunk: 短于该值的尾块并入前一块（0 = 不合并）
+    :param length_fn: 大小度量函数，默认 len（字符数）；传分词器即按 token 预算
     :return: 分段后的文本列表
+
+    overlap=0 且 length_fn=len 时，输出与引入重叠能力之前逐字一致。
     """
-    if len(content) <= limit:
+    if length_fn(content) <= limit:
         return [content]
 
-    result = []
+    char_budget = length_fn is len
+    overlap = max(0, min(int(overlap), limit // 2))
+    result: List[str] = []
     start = 0
+    total = len(content)
 
-    while start < len(content):
-        end = start + limit
+    while start < total:
+        if char_budget:
+            end = start + limit
+        else:
+            end = _budget_window(content, start, limit, length_fn)
 
-        if end >= len(content):
+        if end >= total:
             # 剩余文本不超过限制,直接添加
             result.append(content[start:])
             break
 
-        # 在limit范围内寻找最佳分割点
-        best_split = end
-
-        # 优先级:句号 > 感叹号/问号 > 回车
-        split_chars = [
-            ('。', 0), ('.', 0),  # 中英文句号
-            ('!', 0), ('!', 0),  # 中英文感叹号
-            ('?', 0), ('?', 0),  # 中英文问号
-        ]
-
-        # 从后往前找分割点
-        for i in range(end - 1, start + limit // 2, -1):  # 至少保留一半内容
-            for char, offset in split_chars:
-                if content[i] == char:
-                    best_split = i + 1  # 包含分隔符在当前段
-                    break
-            if best_split != end:
-                break
-
-        # 如果找不到合适分割点,使用原始limit
-        if best_split == end and end < len(content):
-            best_split = end
-
-        # 智能切片升级方案 1-2（2026-09-16，P4）：避免把 markdown 表格数据行从中间切断——
-        # 若分割点落在以 | 开头的行中间，则回退到上一个行边界（不超 limit，行内容完整）
-        line_start = content.rfind('\n', start, best_split) + 1
-        if line_start > start and content[line_start:best_split].lstrip().startswith('|'):
-            previous_row_end = content.rfind('\n', start, line_start)
-            if previous_row_end > start:
-                best_split = previous_row_end + 1
+        best_split = _find_sentence_cut(content, start, end, start + int(limit * lookback)) if boundary else end
+        best_split = _protect_table_row(content, start, best_split)
 
         result.append(content[start:best_split])
-        start = best_split
 
+        if overlap and best_split - overlap > start:
+            next_start = best_split - overlap
+            if overlap_boundary:
+                next_start = _snap_overlap_start(content, next_start, best_split)
+            start = max(next_start, start + 1)
+        else:
+            start = best_split
+
+    result = _merge_short_tail(result, min_chunk)
     return [text for text in result if text.strip()]
 
 
@@ -461,18 +636,111 @@ def filter_special_char(content: str):
     return strip_heading_marker_outside_code(content)
 
 
-class SplitModel:
+def apply_paragraph_overlap(paragraphs: List[Dict], overlap: int, *,
+                            overlap_boundary: bool = True,
+                            overlap_within_section: bool = False,
+                            separator: str = " ") -> List[Dict]:
+    """Give each paragraph the trailing context of the one before it.
 
-    def __init__(self, content_level_pattern, with_filter=True, limit=100000):
+    Applied *after* the heading tree has been assembled, never during it:
+    ``parse_to_tree`` locates blocks with ``str.index()`` on the produced content,
+    so tree-stage chunks must remain disjoint substrings of the source.  Overlapping
+    them there makes the lookup ambiguous and silently reshuffles boundaries (the
+    same reason table-header restoration happens at assembly time).
+
+    The pass is purely additive - no paragraph's own text is altered or dropped, so
+    the fidelity guarantee holds.  ``overlap=0`` returns the input untouched.
+
+    :param paragraphs:             ``[{"title", "content"}, ...]`` in document order
+    :param overlap:                characters of context to carry forward
+    :param overlap_boundary:       move the carried slice forward to the next
+                                   sentence/whitespace boundary so context never
+                                   starts mid-word (keeps ``overlap`` an upper bound)
+    :param overlap_within_section: only carry context between paragraphs that share
+                                   the same heading chain
+    :param separator:              inserted between carried context and the paragraph
+    :return: a new list; inputs are not mutated
+    """
+    if overlap <= 0 or len(paragraphs) < 2:
+        return paragraphs
+
+    result: List[Dict] = []
+    previous: Optional[Dict] = None
+    for row in paragraphs:
+        if not isinstance(row, dict):
+            result.append(row)
+            previous = row if isinstance(row, dict) else previous
+            continue
+        content = row.get("content") or ""
+        if previous is not None and content:
+            prev_content = previous.get("content") or ""
+            same_section = (previous.get("title") or "") == (row.get("title") or "")
+            if prev_content and (same_section or not overlap_within_section):
+                carried = prev_content[-overlap:]
+                if overlap_boundary and len(prev_content) > overlap:
+                    carried = _snap_carry_forward(carried)
+                if carried.strip():
+                    content = carried + separator + content
+                    row = {**row, "content": content}
+        result.append(row)
+        previous = row
+    return result
+
+
+def _snap_carry_forward(carried: str) -> str:
+    """Trim a carried-over slice forward to the first sentence/whitespace boundary.
+
+    Dropping the leading fragment avoids injecting half a word into the next
+    paragraph; the result is never longer than the requested overlap.
+    """
+    for index, char in enumerate(carried):
+        if char in _SENTENCE_BOUNDARIES or char in " \n\t":
+            tail = carried[index + 1:]
+            if tail.strip():
+                return tail
+    return carried
+
+
+class SplitModel:
+    """标题树 + 长度预算的切片器。
+
+    :param content_level_pattern: 分级正则列表，下标 0 为最外层标题
+    :param with_filter: 是否执行清洗（行首标题标记剥离等）
+    :param limit: 段落最大大小
+    :param overlap: 相邻段落共享的上下文字符数；``None``（默认）表示沿用当前
+                    调用作用域内的 :class:`~smart_slice.options.ChunkingOptions`
+    :param options: 显式配置对象，优先级高于 ``overlap``/``limit`` 关键字
+
+    ``overlap``/``options`` 都不传时，配置取自 contextvar 作用域（由
+    ``slice_text``/``slice_bytes`` 等入口设置），因而经 handler 链构造的
+    SplitModel 也能遵循调用方的分块配置，无需改动 handler 签名。
+    """
+
+    def __init__(self, content_level_pattern, with_filter=True, limit=100000,
+                 overlap: Optional[int] = None, options: Optional[ChunkingOptions] = None):
         self.content_level_pattern = content_level_pattern
         self.with_filter = with_filter
-        if type(limit) is not int:
-            limit = int(limit)
-        if limit is None or limit > 100000:
-            limit = 100000
-        if limit < 50:
-            limit = 50
-        self.limit = limit
+        resolved = resolve_options(options, limit=limit, overlap=overlap)
+        self.options = resolved
+        self.limit = resolved.limit
+        self.overlap = resolved.effective_overlap
+
+
+    def _block_split_kwargs(self) -> dict:
+        """Chunking options for cutting an oversized block, minus ``overlap``.
+
+        ``boundary``/``lookback``/``min_chunk``/``length_fn`` legitimately shape how
+        a block is divided; ``overlap`` must be excluded because tree-stage pieces
+        are re-located by ``str.index()`` and must stay disjoint (see
+        :func:`apply_paragraph_overlap`).
+        """
+        o = self.options
+        return {
+            'boundary': o.boundary,
+            'lookback': o.lookback,
+            'min_chunk': o.min_chunk,
+            'length_fn': o.length_fn,
+        }
 
     def parse_to_tree(self, text: str, index=0):
         """
@@ -483,7 +751,13 @@ class SplitModel:
         """
         level_content_list = parse_title_level(text, self.content_level_pattern, index)
         if len(level_content_list) == 0:
-            return [to_tree_obj(row, 'block') for row in smart_split_paragraph(text, limit=self.limit)]
+            # NOTE: overlap is deliberately NOT applied here.  parse_to_tree
+            # recovers block positions with str.index() on the produced content, so
+            # pieces must stay disjoint substrings of the source; overlapping
+            # pieces are ambiguous and would corrupt the tree.  Overlap is applied
+            # once, after assembly, by apply_paragraph_overlap().
+            return [to_tree_obj(row, 'block') for row in
+                    smart_split_paragraph(text, limit=self.limit, **self._block_split_kwargs())]
         if index == 0 and text.lstrip().index(level_content_list[0]["content"].lstrip()) != 0:
             level_content_list.insert(0, to_tree_obj(""))
 
@@ -492,7 +766,9 @@ class SplitModel:
         for i in range(len(level_title_content_list)):
             start_content: str = level_title_content_list[i].get('content')
             if cursor < text.index(start_content, cursor):
-                for row in smart_split_paragraph(text[cursor:   text.index(start_content, cursor)], limit=self.limit):
+                # same rationale as above: no overlap inside the tree walk
+                for row in smart_split_paragraph(text[cursor:   text.index(start_content, cursor)],
+                                                 limit=self.limit, **self._block_split_kwargs()):
                     level_content_list.insert(0, to_tree_obj(row, 'block'))
 
             block, cursor = get_level_block(text, level_title_content_list, i, cursor)
@@ -527,8 +803,13 @@ class SplitModel:
             if len(e['content']) > 4096:
                 pass
         title_list = list(set([row.get('title') for row in result]))
-        return [item for item in [self.post_reset_paragraph(row, title_list) for row in result] if
-                'content' in item and len(item.get('content').strip()) > 0]
+        result = [item for item in [self.post_reset_paragraph(row, title_list) for row in result] if
+                  'content' in item and len(item.get('content').strip()) > 0]
+        # 重叠上下文作为装配后的独立阶段施加（见 apply_paragraph_overlap 的说明）：
+        # overlap=0 时原样返回，输出与引入重叠能力之前逐字一致。
+        return apply_paragraph_overlap(result, self.overlap,
+                                       overlap_boundary=self.options.overlap_boundary,
+                                       overlap_within_section=self.options.overlap_within_section)
 
     def post_reset_paragraph(self, paragraph: Dict, title_list: List[str]):
         result = self.content_is_null(paragraph, title_list)

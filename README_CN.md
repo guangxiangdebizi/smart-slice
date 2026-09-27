@@ -40,7 +40,11 @@ paragraphs = slice_text("# 章节\n\n正文内容", limit=1000)
 
 每个段落的 `title` 字段保存其**标题链**（如 `"第一部分  第三章"`），使下游分块保留章节语境。
 
-### 三、无框架依赖
+### 三、实测高效
+
+551 KB 结构化文档切片约 140 ms（≈3.9 MB/s）。热路径为单遍线性扫描判定块内可能存在的标题层级，跳过必然为空的正则扫描；可选 C 扩展（`pip install smart-slice[accel]`）原生执行该扫描。数据与推理见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)。
+
+### 四、无框架依赖
 
 纯库实现：无 Django、无 ORM、无网络请求、不配置日志（仅通过 `smart_slice` logger 发出记录，路由交由宿主决定）。错误为 `SliceError`，带 HTTP 风格的 `.code`（`400` 输入问题、`500` 解析失败）。从文档抽出的图片经 `save_image` **回调**交付，库本身不做任何持久化。
 
@@ -165,6 +169,32 @@ python -m smart_slice slice notes.md --format md
 ---
 
 ## 进阶用法
+
+### 块大小与重叠
+
+两级切分均有合理默认值，也完全可自定义：不传参用默认，传数值或配置对象即自定义。
+
+| 阶段 | 参数 | 默认 | 自定义 |
+|------|------|------|--------|
+| 切片（段落） | `limit` | `1000` 字符 | `limit=800` |
+| 切片（段落） | `overlap` | `0`（不重叠） | `overlap=150` 或 `overlap_ratio=0.15` |
+| 分块（embedding） | `chunk_size` | `256` 字符 | `chunk_size=512` |
+| 分块（embedding） | `chunk_overlap` | `0`（不重叠） | `chunk_overlap=40` |
+
+```python
+from smart_slice import slice_bytes, chunk_paragraphs, ChunkingOptions
+
+rows = slice_bytes(data, "doc.md")                              # 默认：1000 字符、不重叠
+rows = slice_bytes(data, "doc.md", limit=800, overlap_ratio=0.15)  # 自定义
+
+opts = ChunkingOptions(limit=600, overlap=90, carry_title=True)   # 复用于多个文档
+for name, blob in documents.items():
+    rows = slice_bytes(blob, name, options=opts)
+
+chunks = chunk_paragraphs(rows, chunk_size=256, chunk_overlap=40, carry_title=True)
+```
+
+重叠为**纯增补**：段落数量与标题不变，每个段落只在正文前追加上一段的结尾；`overlap=0`（默认）时各段互不重叠，拼接可逐字还原原文。`ChunkingOptions` 另含 `boundary`（句子边界对齐）、`lookback`（边界回看比例）、`min_chunk`（短块合并）、`carry_title`（标题链前置）、`overlap_within_section`（仅同章节内重叠）、`length_fn`（按 token 计量，传分词器即可）等字段。
 
 ### 自定义标题模式
 

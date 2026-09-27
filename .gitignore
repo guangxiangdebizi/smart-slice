@@ -38,3 +38,15 @@ coverage.xml
 *.swp
 .DS_Store
 Thumbs.db
+
+# Compiled extension / build artefacts
+*.pyd
+*.so
+*.dylib
+*.obj
+*.o
+*.exp
+*.lib
+*.pdb
+*.ilk
+build/

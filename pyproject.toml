@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "smart-slice"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fidelity-first document slicing for RAG pipelines: ~30 formats in, retrieval-ready paragraphs out."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -64,11 +64,15 @@ ocr = ["rapidocr-onnxruntime>=1.3", "pillow>=10.0"]
 keywords = ["jieba>=0.42"]
 # time-sortable image ids (a pure-python fallback is used when absent)
 fastuuid = ["uuid-utils>=0.6"]
+# optional C accelerator for the heading scan.  Purely an optimisation: without it
+# the identical pure-Python scan is used and results are unchanged.
+accel = ["setuptools>=68", "ziglang>=0.11"]
 all = [
     "smart-slice[markup,office,pdf,mail,archive,ebook,image,keywords,fastuuid]",
 ]
 dev = [
     "smart-slice[all]",
+    "smart-slice[accel]",
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.5",
@@ -88,7 +92,7 @@ Changelog = "https://github.com/guangxiangdebizi/smart-slice/blob/main/CHANGELOG
 packages = ["smart_slice"]
 
 [tool.hatch.build.targets.sdist]
-include = ["smart_slice", "tests", "docs", "examples", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+include = ["smart_slice", "tests", "docs", "examples", "csrc", "scripts", "setup.py", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
 
 [tool.ruff]
 line-length = 120

@@ -78,6 +78,17 @@ encoded as an anchored patch in the porting script, so it survives regeneration.
    `_permissive_pil()` context manager around the image parse and restores the
    previous values afterwards.
 
+5. **`chunker.py` graduated to first-party source.** It started as a generated
+   module, but chunking policy (overlap, boundary/lookback, token budgeting) now
+   lives there, along with the heading prefilter. It is no longer regenerated from
+   the platform, and the three latent defects found while doing so were fixed here:
+   `post_handler_paragraph` referenced an unimported `reduce` (a `NameError` that
+   stayed dormant only because nothing called it), the sentence-boundary list
+   contained ASCII `!`/`?` twice instead of the fullwidth `！`/`？`, and the
+   heading-level cascade re-scanned the whole block per level. Files carrying the
+   "Derived from the source platform" header are still generated; `chunker.py`
+   no longer carries it.
+
 ## Ported test suite
 
 The platform's own slicing tests were ported the same way — import re-routing,

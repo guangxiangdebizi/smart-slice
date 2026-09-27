@@ -176,6 +176,48 @@ callers can distinguish from a plain parse failure.
 - `normalize=False` → the handler's raw structure (nested groups for multi-sheet
   workbooks and archives), which preview UIs consume.
 
+## Chunking policy
+
+Chunking lives in `chunker.py`, which is first-party source (it graduated from the
+generated set because policy now lives there - see `docs/PORTING.md`).
+
+`SplitModel.parse(text)` walks the heading tree, cuts oversized blocks with
+`smart_split_paragraph`, and assembles `{"title", "content"}` paragraphs. Two
+policies are configured through `options.ChunkingOptions`:
+
+- **size** (`limit`, `length_fn`) - the per-paragraph budget, measured in characters
+  by default or in tokens if a tokenizer is supplied;
+- **overlap** - applied by `apply_paragraph_overlap` as a distinct pass *after* the
+  tree is assembled.
+
+Overlap is deliberately not applied inside `parse_to_tree`. That function recovers
+block positions with `str.index()` over produced content, which requires chunks to
+stay disjoint substrings of the source; overlapping them makes the lookup ambiguous
+and silently reshuffles boundaries. Applying overlap post-assembly keeps it purely
+additive - a paragraph's own text is never altered.
+
+Options reach the chunker through a `contextvars` slot (`options.use_options`) that
+the public entry points publish for the duration of a call. This is why the 24
+generated handlers keep their original `handle(...)` signature yet still honour
+`overlap`: `SplitModel` reads the ambient options when it is constructed. Context
+variables are per-task, so concurrent slices with different options cannot interfere.
+
+## The heading prefilter (and the optional C scan)
+
+`parse_title_level` cascades down heading levels until one matches. Rather than run
+a whole-block regex for each level, one linear scan first establishes which levels
+the block can contain, and provably-empty levels are skipped. The scan is a strict
+*superset* of the regex acceptance rule (it omits their `(?!#)` / `(?!--*- coding:)`
+guards), so it can only over-report - never miss a heading - which is what makes
+skipping safe. The premise and the end-to-end equivalence are both tested
+(`tests/test_c_speedup.py`).
+
+The scan has two interchangeable implementations resolved by `_accel.py`:
+`_speedup` (optional C, `csrc/_speedup.c`) and `_speedup_py` (always present). The
+canonical markdown patterns are recognised by exact source string
+(`heading_level_of`); any custom pattern bypasses the prefilter and takes the regex
+path unchanged. Measured impact is in `docs/PERFORMANCE.md`.
+
 ## Decoupling from the source platform
 
 This package was extracted from a Django-based agent platform. The extraction

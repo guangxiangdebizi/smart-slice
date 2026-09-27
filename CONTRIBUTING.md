@@ -19,6 +19,13 @@ pip install -e ".[dev]"
 ```bash
 pytest                      # full suite (offline, no DB/network/credentials)
 ruff check smart_slice tests
+python scripts/benchmark.py            # timing (see docs/PERFORMANCE.md)
+```
+
+The C accelerator is optional; the pure-Python scan is used when it is absent:
+
+```bash
+python scripts/build_ext.py            # builds smart_slice/_speedup via zig cc
 ```
 
 All tests build their fixtures in memory or in a temp directory; none reach the
@@ -57,10 +64,17 @@ are generated. Treat them as read-only:
   package matches the source it was extracted from. Raise it as an issue instead,
   so it can be folded back into the transform.
 - Everything else is ordinary hand-written source and may be edited directly: the
-  public facade (`__init__.py`), `patterns.py`, `_config.py`, `_logging.py`,
-  `_i18n.py`, `_uuid.py`, `_markdown.py`, `exceptions.py`, `types.py`,
-  `handlers/__init__.py`, `qa/__init__.py`, `chunking/__init__.py`, and the CLI
-  (`__main__.py`).
+  public facade (`__init__.py`), `chunker.py` (chunking policy - it graduated out of
+  the generated set), `options.py`, `patterns.py`, `_config.py`, `_logging.py`,
+  `_i18n.py`, `_uuid.py`, `_markdown.py`, `_accel.py`, `_speedup_py.py`,
+  `exceptions.py`, `types.py`, `handlers/__init__.py`, `qa/__init__.py`,
+  `chunking/`, and the CLI (`__main__.py`).
+
+Note the two scan implementations must stay in lock-step: if you change
+`_speedup_py.scan_heading_candidates`, mirror it in `csrc/_speedup.c`. The scan is a
+superset of the heading regexes on purpose (over-reporting is safe, under-reporting
+would drop headings); `tests/test_c_speedup.py` asserts C and Python agree and that
+the prefilter never changes slicing output.
 
 See `docs/PORTING.md` for how the extraction works and its deliberate deviations.
 

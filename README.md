@@ -39,7 +39,15 @@ No cleaning step deletes source text.
 
 Each paragraph carries a `title` field holding its **heading chain** (`"Part I  Chapter 3"`), so downstream chunks keep their section context.
 
-### 3. No framework
+### 3. Measurably fast
+
+Slicing a 550 KB structured document takes ~140 ms (≈3.9 MB/s) on a laptop CPU.
+The hot path is a single linear scan that decides which heading levels a block can
+possibly contain, so provably-empty regex passes are skipped; an optional C
+extension (`pip install smart-slice[accel]`) runs that scan natively. Numbers and
+the reasoning are in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+
+### 4. No framework
 
 A pure library: no Django, no ORM, no network calls, no logging configuration (it emits records on the `smart_slice` logger and leaves routing to you). Errors are `SliceError` with an HTTP-style `.code` (`400` = input problem, `500` = parse failure). Images pulled out of a document are handed to a `save_image` **callback** — the library never persists anything.
 
@@ -160,19 +168,92 @@ Archives are unpacked recursively; each inner file goes through the same dispatc
 
 ```bash
 smart-slice slice report.pdf --limit 1000 --format json -o out.json
-smart-slice slice notes.md --format text --title-prefix --stats
+smart-slice slice notes.md --overlap 150 --stats          # 15% overlap on a 1000-char budget
+smart-slice slice notes.md --overlap-ratio 0.15 --format text
+smart-slice chunk notes.md --chunk-size 256 --chunk-overlap 40 --carry-title
 smart-slice detect mystery.bin
 smart-slice formats            # list handlers + missing optional deps
 python -m smart_slice slice notes.md --format md   # module form
 ```
 
-- `slice` — `--format {json,jsonl,text,md}`, `--limit`, `--no-filter`, `--title-prefix`, `-o/--output`, `--stats` (summary to stderr).
+- `slice` — `--format {json,jsonl,text,md}`, `--limit`, `--overlap`, `--overlap-ratio`, `--overlap-section-only`, `--no-filter`, `--title-prefix`, `-o/--output`, `--stats` (summary to stderr).
+- `chunk` — slices first, then cuts paragraphs to an embedding window: `--chunk-size`, `--chunk-overlap`, `--carry-title`, `-o/--output`, `--stats`. Emits one JSON object per chunk.
 - `detect` — prints the handler class that would claim the file (exit 2 if none).
 - `formats` — supported extensions and which extras are not installed (`--json` for machines).
 
 ---
 
 ## Advanced usage
+
+### Chunk size and overlap
+
+Both stages default to sensible values and both are fully configurable — pass
+nothing for defaults, or pass numbers/objects for control.
+
+| Stage | Knob | Default | Customise |
+|-------|------|---------|-----------|
+| slicing (paragraphs) | `limit` | `1000` chars | `limit=800` |
+| slicing (paragraphs) | `overlap` | `0` (none) | `overlap=150` or `overlap_ratio=0.15` |
+| chunking (embeddings) | `chunk_size` | `256` chars | `chunk_size=512` |
+| chunking (embeddings) | `chunk_overlap` | `0` (none) | `chunk_overlap=40` |
+
+```python
+from smart_slice import slice_bytes, chunk_paragraphs, ChunkingOptions
+
+# defaults: 1000-char paragraphs, no overlap
+rows = slice_bytes(data, "doc.md")
+
+# custom: 800-char paragraphs carrying 15% of context forward
+rows = slice_bytes(data, "doc.md", limit=800, overlap_ratio=0.15)
+
+# reuse one configuration across many documents
+opts = ChunkingOptions(limit=600, overlap=90, carry_title=True)
+for name, blob in documents.items():
+    rows = slice_bytes(blob, name, options=opts)
+
+# second stage: embedding chunks with their own overlap
+chunks = chunk_paragraphs(rows, chunk_size=256, chunk_overlap=40, carry_title=True)
+```
+
+**What overlap does to the output.** Paragraph *count* and *titles* are unchanged;
+each paragraph simply gains the previous paragraph's tail:
+
+```python
+plain    = slice_bytes(data, "doc.md", limit=500)                # 42 paragraphs
+overlapped = slice_bytes(data, "doc.md", limit=500, overlap=100) # 42 paragraphs
+assert len(plain) == len(overlapped)
+assert plain[0]["content"] in overlapped[0]["content"]   # additive, never lossy
+```
+
+With `overlap=0` (the default) chunks tile the source exactly once, so
+concatenating them reproduces the original text. A positive overlap trades that
+strict tiling property for cross-boundary retrieval recall — the right choice when
+an answer spans a cut point, the wrong one when you need to reconstruct the
+document from its chunks.
+
+`ChunkingOptions` fields:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `limit` | `1000` | maximum chunk size, measured with `length_fn` |
+| `overlap` | `None` | characters of shared context; clamped to `limit // 2` |
+| `overlap_ratio` | `None` | `overlap` as a fraction of `limit` (`0.15` = 15%) |
+| `boundary` | `True` | snap cuts to sentence ends instead of cutting mid-sentence |
+| `lookback` | `0.5` | fraction of `limit` searched backwards for a boundary |
+| `overlap_boundary` | `True` | start carried context at a sentence/whitespace edge |
+| `overlap_within_section` | `False` | only carry context inside one heading chain |
+| `min_chunk` | `0` | merge chunks shorter than this into the previous one |
+| `carry_title` | `False` | prefix **every** chunk with its heading chain |
+| `length_fn` | `len` | size metric — pass a tokenizer to budget in tokens |
+
+Token-based budgeting needs no extra plumbing:
+
+```python
+import tiktoken
+enc = tiktoken.encoding_for_model("gpt-4o-mini")
+opts = ChunkingOptions(limit=400, overlap=60, length_fn=lambda s: len(enc.encode(s)))
+rows = slice_bytes(data, "doc.md", options=opts)   # 400-token paragraphs
+```
 
 ### Custom heading patterns
 
@@ -213,14 +294,10 @@ slice_bytes(data, "huge.pdf", limit=1000, progress_hook=lambda: job.touch())
 
 ### Second-stage chunking for embeddings
 
-Slicing yields semantic paragraphs; embedding models still need fixed-size input. `chunk_paragraphs` cuts paragraphs to a window while the paragraph stays the retrieval unit:
-
-```python
-from smart_slice import slice_path, chunk_paragraphs
-
-rows = slice_path("doc.md", limit=2000)
-chunks = chunk_paragraphs(rows, chunk_size=256)
-```
+Slicing yields semantic paragraphs; embedding models still need fixed-size input.
+`chunk_paragraphs` cuts paragraphs to a window while the paragraph stays the
+retrieval unit. See [Chunk size and overlap](#chunk-size-and-overlap) for the
+overlap and `carry_title` options.
 
 ### Error handling
 

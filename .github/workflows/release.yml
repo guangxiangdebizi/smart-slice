@@ -58,34 +58,46 @@ jobs:
       - name: Check distribution metadata
         run: python -m twine check dist/*
 
-      - name: Install the built wheel into a clean environment
+      # The full suite exercises every format parser, so it runs with all format
+      # extras installed plus pytest/ruff. The `accel` extra is deliberately NOT
+      # installed: it pulls ziglang (~400 MB) and the C extension is only an
+      # optional optimisation - tests/test_c_speedup.py skips its C-specific cases
+      # and still asserts the pure-Python scan never changes slicing output.
+      - name: Run the full test suite (all format extras)
         run: |
-          python -m venv /tmp/wheelcheck
-          /tmp/wheelcheck/bin/python -m pip install --disable-pip-version-check dist/*.whl
+          python -m pip install --disable-pip-version-check \
+            -e ".[all]" pytest ruff
+          python -m pytest tests -q
+          python -m ruff check smart_slice tests
 
-      # Regression guard: the published wheel must be importable with only its
-      # core dependency installed, and formats whose parser is missing must
-      # degrade to "unsupported" instead of raising at import time.
-      - name: Verify the bare-install contract
+      # Separate regression guard for the published wheel, checked against the
+      # actual built artefact in a clean venv that has ONLY the core dependency:
+      # the package must import, core slicing must work, formats whose parser is
+      # absent must degrade to "unsupported" (400) instead of raising at import
+      # time, and the pure-stdlib handlers must still work. This is the contract
+      # the README promises - it must be checked in a bare venv, never in the
+      # full-extras environment above.
+      - name: Verify the bare-install contract on the built wheel
         run: |
-          /tmp/wheelcheck/bin/python - <<'PY'
+          python -m venv /tmp/barecheck
+          /tmp/barecheck/bin/python -m pip install --disable-pip-version-check dist/*.whl
+          /tmp/barecheck/bin/python - <<'PY'
           import smart_slice as s
           assert s.__version__, "version missing"
           assert s.slice_text("# T\n\nbody", limit=100), "core slicing broken"
+          # a parser deliberately NOT installed must degrade, not crash
           try:
               s.slice_bytes(b"%PDF-1.4 x", "a.pdf")
           except s.SliceError as e:
               assert e.code == 400, f"expected 400 for a missing parser, got {e.code}"
           except Exception as e:
               raise SystemExit(f"bare install raised {type(e).__name__}: {e}")
+          # pure-stdlib handlers must work with no extras installed at all
+          assert s.slice_bytes(b'<svg xmlns="x"><text>t</text></svg>', "n.svg"), "svg broken"
+          assert s.slice_bytes(b"1\n00:00:01,000 --> 00:00:02,000\ncue\n", "s.srt"), "srt broken"
           print("bare-install contract OK:", s.__version__,
                 len(s.HANDLER_EXTENSIONS), "handlers")
           PY
-
-      - name: Run the test suite from the installed wheel
-        run: |
-          /tmp/wheelcheck/bin/python -m pip install --disable-pip-version-check pytest
-          /tmp/wheelcheck/bin/python -m pytest tests -q
 
       - name: Upload distributions as workflow artefacts
         uses: actions/upload-artifact@v4

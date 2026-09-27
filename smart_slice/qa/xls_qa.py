@@ -9,7 +9,10 @@ _log = get_logger("qa.xls")
 
 import traceback
 
-import xlrd
+try:
+    import xlrd
+except ImportError:  # optional extra: smart-slice[office]
+    xlrd = None
 
 from smart_slice.qa._base import BaseParseQAHandle, get_title_row_index_dict, get_row_value
 

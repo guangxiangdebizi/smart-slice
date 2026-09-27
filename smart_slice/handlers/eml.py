@@ -22,8 +22,13 @@ import io
 import traceback
 from typing import List
 
-from bs4 import BeautifulSoup
-from markdownify import markdownify
+try:
+    from bs4 import BeautifulSoup
+    from markdownify import markdownify
+    MARKUP_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[markup]
+    BeautifulSoup = markdownify = None
+    MARKUP_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice.handlers._utils import build_split_model
@@ -63,7 +68,8 @@ def _pick_body(msg) -> str:
 
 class EmlSplitHandle(BaseSplitHandle):
     def support(self, file, get_buffer):
-        return file.name.lower().endswith(".eml")
+        # markdownify/bs4 为可选 extra（smart-slice[markup]）：缺失时不认领
+        return MARKUP_AVAILABLE and file.name.lower().endswith(".eml")
 
     def handle(self, file, pattern_list: List, with_filter: bool, limit: int, get_buffer, save_image):
         try:

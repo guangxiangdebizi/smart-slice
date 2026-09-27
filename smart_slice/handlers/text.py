@@ -36,6 +36,22 @@ TEXT_EXTENSIONS = (
     '.txt', '.md', '.markdown', '.log', '.json', '.jsonl', '.ndjson', '.yaml', '.yml',
     '.toml', '.ini', '.cfg', '.conf', '.rst', '.tex', '.sql', '.py', '.js', '.ts',
     '.tsx', '.jsx', '.sh', '.bash', '.ps1', '.css', '.scss', '.xml',
+    # Phase 3（2026-09-27）格式扩展：补齐常见源码/配置/数据扩展名。此前这些后缀仅靠
+    # "编码探测通过即按文本硬解码"的兜底路径命中，且因不在 TEXT_EXTENSIONS 里而落到
+    # default_pattern_list（markdown 标题），源码里的 `# 注释` 会被误判为标题并抽成
+    # title（保真度缺陷）。补进后自动进入 LITERAL_EXTENSIONS（仅空行分段、不解释 `#`），
+    # 源码原样保留、按空行/limit 切分。注意 .ts 已在上方（与 MPEG-TS 的区分见
+    # _decode_file_text 的 0x47 同步字节嗅探）。
+    '.java', '.kt', '.kts', '.scala', '.groovy', '.gradle',
+    '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.m', '.mm',
+    '.cs', '.go', '.rs', '.rb', '.php', '.swift', '.dart', '.lua', '.r', '.jl',
+    '.pl', '.pm', '.ex', '.exs', '.erl', '.hs', '.clj', '.elm', '.nim', '.zig',
+    '.vue', '.svelte', '.astro',
+    '.bat', '.cmd', '.make', '.mak', '.cmake', '.dockerfile',
+    '.proto', '.graphql', '.gql', '.thrift', '.avsc',
+    '.properties', '.env', '.editorconfig', '.gitignore', '.gitattributes',
+    '.diff', '.patch', '.po', '.pot', '.nfo', '.lock', '.map',
+    '.adoc', '.asciidoc', '.org', '.textile', '.mediawiki',
 )
 LITERAL_EXTENSIONS = tuple(extension for extension in TEXT_EXTENSIONS
                            if extension not in ('.txt', '.md', '.markdown', '.rst'))

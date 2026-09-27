@@ -19,7 +19,12 @@ from smart_slice.exceptions import SliceError
 
 from typing import List
 
-from striprtf.striprtf import rtf_to_text
+try:
+    from striprtf.striprtf import rtf_to_text
+    RTF_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[office]
+    rtf_to_text = None
+    RTF_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice.handlers._utils import build_split_model
@@ -29,6 +34,9 @@ RTF_MAGIC = b"{\\rtf"
 
 class RtfSplitHandle(BaseSplitHandle):
     def support(self, file, get_buffer):
+        # striprtf 为可选 extra（smart-slice[office]）：缺失时不认领
+        if not RTF_AVAILABLE:
+            return False
         if not file.name.lower().endswith(".rtf"):
             return False
         try:

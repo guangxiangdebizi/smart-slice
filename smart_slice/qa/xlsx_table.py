@@ -11,7 +11,10 @@ import io
 import logging
 import traceback
 
-from openpyxl import load_workbook
+try:
+    from openpyxl import load_workbook
+except ImportError:  # optional extra: smart-slice[office]
+    load_workbook = None
 
 from smart_slice.qa._table_base import BaseParseTableHandle
 from smart_slice.handlers._xlsx_images import xlsx_embed_cells_images

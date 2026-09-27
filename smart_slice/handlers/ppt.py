@@ -27,12 +27,20 @@ import struct
 import traceback
 from typing import List
 
-import olefile
+try:
+    import olefile
+    OLEFILE_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[office]
+    olefile = None
+    OLEFILE_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
-from smart_slice.handlers.doc import DocSplitHandle
-from smart_slice.handlers.pptx import PptxSplitHandle
+from smart_slice.handlers.doc import DocSplitHandle, DOCX_AVAILABLE
+from smart_slice.handlers.pptx import PptxSplitHandle, PPTX_AVAILABLE
 from smart_slice.handlers._utils import build_split_model
+
+#: .ppt/.dps/.odp 之外的演示类二进制扩展名
+PPT_EXTENSIONS = ('.ppt', '.dps')
 
 ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 
@@ -84,7 +92,10 @@ def _extract_ppt_text(buffer: bytes) -> str:
 
 class PptSplitHandle(BaseSplitHandle):
     def support(self, file, get_buffer):
-        return file.name.lower().endswith(".ppt")
+        # 改名 OOXML 走 python-pptx，真 OLE 二进制走 olefile；两者均缺失时不认领
+        if not (PPTX_AVAILABLE or OLEFILE_AVAILABLE):
+            return False
+        return file.name.lower().endswith(PPT_EXTENSIONS)
 
     def handle(self, file, pattern_list: List, with_filter: bool, limit: int, get_buffer, save_image):
         try:

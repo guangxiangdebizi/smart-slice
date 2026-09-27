@@ -20,17 +20,26 @@ import io
 import traceback
 from typing import List
 
-from bs4 import BeautifulSoup
-from markdownify import markdownify
+try:
+    from bs4 import BeautifulSoup
+    from markdownify import markdownify
+    MARKUP_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[markup]
+    BeautifulSoup = markdownify = None
+    MARKUP_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice.handlers._utils import build_split_model
+from smart_slice import _optional
 
 OLE_MAGIC = b"\xd0\xcf\x11\xe0"
 
 
 class MsgSplitHandle(BaseSplitHandle):
     def support(self, file, get_buffer):
+        # extract-msg + markdownify/bs4 为可选 extra（mail / markup）：缺失时不认领
+        if not (MARKUP_AVAILABLE and _optional.installed("extract_msg")):
+            return False
         if not file.name.lower().endswith(".msg"):
             return False
         try:

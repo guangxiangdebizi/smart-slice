@@ -459,14 +459,26 @@ class SplitDocumentContractTests(unittest.TestCase):
 
     def test_split_handlers_contains_all_handlers_in_order(self):
         # Phase 2-A（2026-09-17）全格式适配：办公文档族 handler 插入 Xmind 之后、
-        # Image 之前；TextSplitHandle 仍为末位兜底
+        # Image 之前；TextSplitHandle 仍为末位兜底。
+        # Phase 3（2026-09-27）格式扩展：Fb2 在 Zip 之前（.fb2.zip 不被当普通压缩包）；
+        # Svg/Ipynb/Subtitle/Mbox/Vcalendar/Vcard 结构化文本与 ExtendedImage 扩展位图
+        # 在 Image 前后、TextSplitHandle 兜底之前认领。
         names = [type(h).__name__ for h in SPLIT_HANDLERS]
-        self.assertEqual(names, ["HTMLSplitHandle", "MhtmlSplitHandle", "DocSplitHandle", "PdfSplitHandle", "XlsxSplitHandle",
-                                 "XlsSplitHandle", "CsvSplitHandle", "ZipSplitHandle", "XmindSplitHandle",
-                                 "PptxSplitHandle", "PptSplitHandle", "WpsSplitHandle", "RtfSplitHandle",
-                                 "OdfSplitHandle", "EpubSplitHandle", "EmlSplitHandle", "MsgSplitHandle",
-                                 "MobiSplitHandle", "TarSplitHandle", "SevenZipSplitHandle",
-                                 "ImageSplitHandle", "TextSplitHandle"])
+        self.assertEqual(names, [
+            "HTMLSplitHandle", "MhtmlSplitHandle", "DocSplitHandle", "PdfSplitHandle",
+            "XlsxSplitHandle", "XlsSplitHandle", "CsvSplitHandle", "Fb2SplitHandle",
+            "ZipSplitHandle", "XmindSplitHandle", "PptxSplitHandle", "PptSplitHandle",
+            "WpsSplitHandle", "RtfSplitHandle", "OdfSplitHandle", "EpubSplitHandle",
+            "EmlSplitHandle", "MsgSplitHandle", "MobiSplitHandle", "TarSplitHandle",
+            "SevenZipSplitHandle", "SvgSplitHandle", "IpynbSplitHandle", "SubtitleSplitHandle",
+            "MboxSplitHandle", "VcalendarSplitHandle", "VcardSplitHandle", "ImageSplitHandle",
+            "ExtendedImageSplitHandle", "TextSplitHandle",
+        ])
+        # 兜底与图片族的相对位置是硬约束：ExtendedImage 继承 ImageSplitHandle，
+        # 二者都必须在 TextSplitHandle 之前，且 TextSplitHandle 末位兜底
+        self.assertEqual(names[-1], "TextSplitHandle")
+        self.assertLess(names.index("ImageSplitHandle"), names.index("TextSplitHandle"))
+        self.assertLess(names.index("Fb2SplitHandle"), names.index("ZipSplitHandle"))
 
 
 if __name__ == "__main__":

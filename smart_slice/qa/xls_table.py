@@ -10,7 +10,10 @@ _log = get_logger("table.xls")
 import logging
 import traceback
 
-import xlrd
+try:
+    import xlrd
+except ImportError:  # optional extra: smart-slice[office]
+    xlrd = None
 
 from smart_slice.qa._table_base import BaseParseTableHandle
 

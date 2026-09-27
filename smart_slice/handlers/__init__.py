@@ -23,6 +23,13 @@ from typing import Dict, List, Tuple
 
 from .archive import SevenZipSplitHandle, TarSplitHandle
 from .base import BaseSplitHandle
+from .fb2 import Fb2SplitHandle
+from .ipynb import IpynbSplitHandle
+from .mbox import MboxSplitHandle
+from .raster_image import EXTRA_IMAGE_EXTENSIONS, ExtendedImageSplitHandle
+from .subtitle import SUBTITLE_EXTENSIONS, SubtitleSplitHandle
+from .svg import SVG_EXTENSIONS, SvgSplitHandle
+from .vcalendar import ICS_EXTENSIONS, VCF_EXTENSIONS, VcalendarSplitHandle, VcardSplitHandle
 from .csv_handler import CsvSplitHandle
 from .doc import DocSplitHandle
 from .eml import EmlSplitHandle
@@ -74,6 +81,19 @@ __all__ = [
     "TextSplitHandle",
     "TEXT_EXTENSIONS",
     "image_extensions",
+    "SvgSplitHandle",
+    "IpynbSplitHandle",
+    "SubtitleSplitHandle",
+    "Fb2SplitHandle",
+    "MboxSplitHandle",
+    "VcalendarSplitHandle",
+    "VcardSplitHandle",
+    "ExtendedImageSplitHandle",
+    "SVG_EXTENSIONS",
+    "SUBTITLE_EXTENSIONS",
+    "EXTRA_IMAGE_EXTENSIONS",
+    "ICS_EXTENSIONS",
+    "VCF_EXTENSIONS",
 ]
 
 #: Dispatch order == priority.  Keep ``TextSplitHandle`` last: it is the fallback.
@@ -85,6 +105,8 @@ SPLIT_HANDLERS: Tuple[BaseSplitHandle, ...] = (
     XlsxSplitHandle(),
     XlsSplitHandle(),
     CsvSplitHandle(),
+    # .fb2.zip 必须在通用 zip 之前认领，否则被 ZipSplitHandle 当普通压缩包解
+    Fb2SplitHandle(),
     ZipSplitHandle(),
     XmindSplitHandle(),
     PptxSplitHandle(),
@@ -98,23 +120,33 @@ SPLIT_HANDLERS: Tuple[BaseSplitHandle, ...] = (
     MobiSplitHandle(),
     TarSplitHandle(),
     SevenZipSplitHandle(),
+    # 结构化文本格式（标准库解析）：必须在 TextSplitHandle 兜底之前认领，
+    # 否则 .svg/.ipynb/.ics/.vcf 等会被排除表拦成 400 或按纯文本硬解
+    SvgSplitHandle(),
+    IpynbSplitHandle(),
+    SubtitleSplitHandle(),
+    MboxSplitHandle(),
+    VcalendarSplitHandle(),
+    VcardSplitHandle(),
     ImageSplitHandle(),
+    # 扩展位图（.ico/.tga/.pcx/...）：继承 ImageSplitHandle，认领父类未覆盖的容器
+    ExtendedImageSplitHandle(),
     TextSplitHandle(),
 )
 
 #: Extension -> handler class, for introspection and docs only (dispatch itself
 #: goes through ``support`` which also content-sniffs).
 HANDLER_EXTENSIONS: Dict[str, Tuple[str, ...]] = {
-    "HTMLSplitHandle": (".html", ".htm"),
+    "HTMLSplitHandle": (".html", ".htm", ".xhtml", ".shtml"),
     "MhtmlSplitHandle": (".mhtml", ".mht"),
-    "DocSplitHandle": (".docx", ".docm"),
+    "DocSplitHandle": (".docx", ".docm", ".doc", ".dotx", ".dotm"),
     "PdfSplitHandle": (".pdf",),
-    "XlsxSplitHandle": (".xlsx", ".xlsm"),
+    "XlsxSplitHandle": (".xlsx", ".xlsm", ".xltx", ".xltm"),
     "XlsSplitHandle": (".xls",),
-    "CsvSplitHandle": (".csv", ".tsv"),
+    "CsvSplitHandle": (".csv", ".tsv", ".tab"),
     "ZipSplitHandle": (".zip",),
     "XmindSplitHandle": (".xmind",),
-    "PptxSplitHandle": (".pptx", ".ppsx", ".potx", ".ppsm", ".potm"),
+    "PptxSplitHandle": (".pptx", ".pptm", ".ppsx", ".ppsm", ".potx", ".potm"),
     "PptSplitHandle": (".ppt", ".dps"),
     "WpsSplitHandle": (".wps", ".et"),
     "RtfSplitHandle": (".rtf",),
@@ -122,10 +154,18 @@ HANDLER_EXTENSIONS: Dict[str, Tuple[str, ...]] = {
     "EpubSplitHandle": (".epub",),
     "EmlSplitHandle": (".eml",),
     "MsgSplitHandle": (".msg",),
-    "MobiSplitHandle": (".mobi", ".azw", ".azw3"),
-    "TarSplitHandle": (".tar", ".tar.gz", ".tgz", ".tar.bz2"),
+    "MobiSplitHandle": (".mobi", ".azw", ".azw1", ".azw3", ".azw4", ".prc"),
+    "TarSplitHandle": (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".txz"),
     "SevenZipSplitHandle": (".7z",),
     "ImageSplitHandle": image_extensions + ((".heic", ".heif") if HEIF_SUPPORTED else ()),
+    "Fb2SplitHandle": (".fb2", ".fb2.zip"),
+    "SvgSplitHandle": SVG_EXTENSIONS,
+    "IpynbSplitHandle": (".ipynb",),
+    "SubtitleSplitHandle": SUBTITLE_EXTENSIONS,
+    "MboxSplitHandle": (".mbox",),
+    "VcalendarSplitHandle": ICS_EXTENSIONS,
+    "VcardSplitHandle": VCF_EXTENSIONS,
+    "ExtendedImageSplitHandle": EXTRA_IMAGE_EXTENSIONS,
     "TextSplitHandle": TEXT_EXTENSIONS,
 }
 

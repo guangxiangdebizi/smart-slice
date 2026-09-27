@@ -17,15 +17,24 @@ from io import BytesIO
 from xml.etree.ElementTree import fromstring
 from zipfile import ZipFile
 
-from PIL import Image as PILImage
-from openpyxl.drawing.image import Image as openpyxl_Image
-from openpyxl.packaging.relationship import get_rels_path, get_dependents
-from openpyxl.xml.constants import SHEET_DRAWING_NS, REL_NS, SHEET_MAIN_NS
+try:
+    from PIL import Image as PILImage
+    from openpyxl.drawing.image import Image as openpyxl_Image
+    from openpyxl.packaging.relationship import get_rels_path, get_dependents
+    from openpyxl.xml.constants import SHEET_DRAWING_NS, REL_NS, SHEET_MAIN_NS
+    XLSX_IMAGES_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[office]
+    PILImage = openpyxl_Image = get_rels_path = get_dependents = None
+    SHEET_DRAWING_NS = REL_NS = SHEET_MAIN_NS = ""
+    XLSX_IMAGES_AVAILABLE = False
 
 
 from contextlib import contextmanager
 
-from PIL import ImageFile
+try:
+    from PIL import ImageFile
+except ImportError:  # optional extra: smart-slice[pdf]
+    ImageFile = None
 
 
 @contextmanager

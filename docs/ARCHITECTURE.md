@@ -55,20 +55,55 @@ handlers can sniff without re-reading.
 `split_document` iterates `SPLIT_HANDLERS` **in order** and uses the first handler
 whose `support` returns True. Order therefore *is* priority:
 
-1. specific structured formats first (HTML, MHTML, DOCX, PDF, spreadsheets, CSV,
-   ZIP, XMind, the Office/ebook/mail/archive families),
-2. images,
-3. `TextSplitHandle` **last**, as the fallback for anything else that decodes as
+1. specific structured formats first (HTML, MHTML, DOCX, PDF, spreadsheets, CSV),
+2. `Fb2SplitHandle` **before** `ZipSplitHandle` - `.fb2.zip` is a FictionBook in a
+   zip container, not a generic archive, so it must be claimed first,
+3. ZIP, XMind, the Office/ebook/mail/archive families,
+4. the pure-stdlib structured-text handlers (SVG, ipynb, subtitle, mbox,
+   iCalendar/vCard) - they must precede the text fallback or their extensions would
+   either hit the exclusion list (`.svg` -> 400) or be parsed with the markdown
+   heading patterns (`.ipynb`/`.ics` -> metadata extracted as titles),
+5. images (`ImageSplitHandle`, then `ExtendedImageSplitHandle` which subclasses it
+   for the extra Pillow-decodable raster containers),
+6. `TextSplitHandle` **last**, as the fallback for anything else that decodes as
    text.
 
 `TextSplitHandle` accepts a broad set of text/source extensions and otherwise
-falls back to "decodes cleanly as text". A separate exclusion list keeps known
-binary/media extensions out of that fallback so a mis-detected binary is not
-force-decoded into garbage. When no handler claims the input, the service raises
+falls back to "decodes cleanly as text". Extensions in `TEXT_EXTENSIONS` that are
+not prose (`.py`, `.java`, `.json`, `.yaml`, ...) also land in `LITERAL_EXTENSIONS`,
+which splits on blank lines/length only - a `#` comment in source code is data, not
+a heading. A separate exclusion list keeps known binary/media extensions out of
+that fallback so a mis-detected binary is not force-decoded into garbage. When no
+handler claims the input, the service raises
 `SliceError(400, "Unsupported file format: <ext>")`.
 
 Archives recurse: the zip/tar/7z handlers unpack and run each inner file through
-the same registry, so a `.zip` of `.docx` files slices each document normally.
+their own list (`zip_handler.split_handles`), which tracks `SPLIT_HANDLERS` for the
+document formats but **deliberately omits the image handlers** - embedded images
+travel through the zip handler's markdown reference collection and the `save_image`
+callback instead of becoming standalone image paragraphs (a Phase 2-B decision,
+pinned by `tests/test_service.py::OcrInjectionBranchTests`). So a `.zip` of `.docx`
+files slices each document normally, while a loose image inside it is skipped and
+logged rather than claimed.
+
+### Optional dependencies never break import
+
+Every format parser except `charset-normalizer` is an optional extra, but
+`smart_slice.handlers` builds all handler singletons at import time. Two rules keep
+a partial install working:
+
+- each module's third-party import is wrapped in `try/except ImportError`, binding
+  the missing names to `None` and setting an `*_AVAILABLE` flag;
+- each handler's `support()` returns False when its flag is off.
+
+So a missing parser makes the format *unclaimed* - dispatch continues, and the
+service layer answers `400 Unsupported file format: .pdf` - rather than raising
+`ModuleNotFoundError` from `import smart_slice`. `smart_slice._optional` is the
+single mapping of import name -> pip extra, which both drives those flags and
+produces the actionable message text (`pip install smart-slice[office]`).
+Nothing is touched at import time beyond binding `None`: the one module-level
+expression that needed a parser (`doc.py`'s namespace map) was made lazy for the
+same reason.
 
 ## The slicing algorithm (chunker)
 

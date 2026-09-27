@@ -19,16 +19,23 @@ _log = get_logger("wps")
 from typing import List
 
 from smart_slice.handlers.base import BaseSplitHandle
-from smart_slice.handlers.doc import DocSplitHandle
-from smart_slice.handlers.xlsx import XlsxSplitHandle
+from smart_slice.handlers.doc import DocSplitHandle, DOCX_AVAILABLE
+from smart_slice.handlers.xlsx import XlsxSplitHandle, OPENPYXL_AVAILABLE
 
 ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 
 
 class WpsSplitHandle(BaseSplitHandle):
     def support(self, file, get_buffer):
+        # .wps/.et 分别委托 docx/xlsx 解析：对应可选 extra 缺失时不认领
         file_name: str = file.name.lower()
-        if not (file_name.endswith(".wps") or file_name.endswith(".et")):
+        if file_name.endswith(".et"):
+            if not OPENPYXL_AVAILABLE:
+                return False
+        elif file_name.endswith(".wps"):
+            if not DOCX_AVAILABLE:
+                return False
+        else:
             return False
         # 仅接受 OOXML 兼容 zip 容器；老二进制格式不命中（公共层报 400 不支持）
         try:

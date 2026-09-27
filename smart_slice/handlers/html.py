@@ -14,13 +14,21 @@ import re
 import traceback
 from typing import List
 
-from bs4 import BeautifulSoup
 from charset_normalizer import detect
-from markdownify import markdownify
+try:
+    from bs4 import BeautifulSoup
+    from markdownify import markdownify
+    MARKUP_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[markup]
+    BeautifulSoup = markdownify = None
+    MARKUP_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice._validation import decode_text, validate_input
 from smart_slice.chunker import SplitModel
+
+#: HTML 族扩展名（.svg 单独走 SvgSplitHandle，不在此清单）
+HTML_EXTENSIONS = ('.html', '.htm', '.xhtml', '.shtml')
 
 default_pattern_list = [re.compile('(?<=^)# .*|(?<=\\n)# .*'),
                         re.compile('(?<=\\n)(?<!#)## (?!#).*|(?<=^)(?<!#)## (?!#).*'),
@@ -51,8 +59,11 @@ def html_to_markdown(buffer):
 
 class HTMLSplitHandle(BaseSplitHandle):
     def support(self, file, get_buffer):
+        # markdownify/bs4 为可选 extra（smart-slice[markup]）：缺失时不认领
+        if not MARKUP_AVAILABLE:
+            return False
         file_name: str = file.name.lower()
-        if file_name.endswith((".html", ".htm", ".xhtml")):
+        if file_name.endswith(HTML_EXTENSIONS):
             return True
         return False
 

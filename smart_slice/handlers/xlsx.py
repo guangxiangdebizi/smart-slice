@@ -15,8 +15,13 @@ import os
 import traceback
 from typing import List
 
-import openpyxl
-from openpyxl import load_workbook
+try:
+    import openpyxl
+    from openpyxl import load_workbook
+    OPENPYXL_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[office]
+    openpyxl = load_workbook = None
+    OPENPYXL_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice.handlers._xlsx_images import xlsx_embed_cells_images
@@ -248,6 +253,9 @@ class XlsxSplitHandle(BaseSplitHandle):
         return cell_str
 
     def support(self, file, get_buffer):
+        # openpyxl 为可选 extra（smart-slice[office]）：缺失时不认领
+        if not OPENPYXL_AVAILABLE:
+            return False
         file_name: str = file.name.lower()
         if file_name.endswith(tuple(WORKBOOK_CONTENT_TYPES)):
             return True

@@ -25,17 +25,26 @@ import tempfile
 import traceback
 from typing import List
 
-from bs4 import BeautifulSoup
-from markdownify import markdownify
+try:
+    from bs4 import BeautifulSoup
+    from markdownify import markdownify
+    MARKUP_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[markup]
+    BeautifulSoup = markdownify = None
+    MARKUP_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice.handlers._utils import build_split_model
+from smart_slice import _optional
 
 
 class MobiSplitHandle(BaseSplitHandle):
-    MOBI_EXTENSIONS = (".mobi", ".azw", ".azw3")
+    MOBI_EXTENSIONS = (".mobi", ".azw", ".azw1", ".azw3", ".azw4", ".prc")
 
     def support(self, file, get_buffer):
+        # mobi 库 + markdownify/bs4 均为可选 extra（ebook / markup）：缺失时不认领
+        if not (MARKUP_AVAILABLE and _optional.installed("mobi")):
+            return False
         return file.name.lower().endswith(self.MOBI_EXTENSIONS)
 
     def handle(self, file, pattern_list: List, with_filter: bool, limit: int, get_buffer, save_image):

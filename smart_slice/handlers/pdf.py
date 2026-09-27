@@ -21,9 +21,14 @@ import traceback
 from contextlib import contextmanager
 from typing import List
 
-from PIL import Image
-from pypdf import PdfReader
-from pypdf.generic import Destination
+try:
+    from PIL import Image
+    from pypdf import PdfReader
+    from pypdf.generic import Destination
+    PDF_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[pdf]
+    Image = PdfReader = Destination = None
+    PDF_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice.chunker import SplitModel, smart_split_paragraph
@@ -598,6 +603,10 @@ class PdfSplitHandle(BaseSplitHandle):
         return title
 
     def support(self, file, get_buffer):
+        # pypdf/Pillow 为可选 extra（smart-slice[pdf]）：缺失时不认领，
+        # 由公共层报 400 不支持，而不是在 import 阶段炸掉整个包
+        if not PDF_AVAILABLE:
+            return False
         file_name: str = file.name.lower()
         if file_name.endswith(".pdf") or file_name.endswith(".PDF"):
             return True

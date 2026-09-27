@@ -1,10 +1,10 @@
 # smart-slice
 
-**Fidelity-first document slicing for RAG pipelines.** Feed it ~30 file formats, get back retrieval-ready paragraphs that keep every original character reachable.
+**Fidelity-first document slicing for RAG pipelines.** Feed it 197 file extensions across 30 handlers, get back retrieval-ready paragraphs that keep every original character reachable.
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-119%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-216%20passed-brightgreen.svg)]()
 [![PyPI](https://img.shields.io/badge/pypi-smart--slice-orange.svg)]()
 
 ```python
@@ -135,32 +135,62 @@ Every entry point returns a list of `{"title": str, "content": str}`:
 
 ## Supported formats
 
-| Category | Handler | Extensions |
-|----------|---------|-----------|
-| Web | `HTMLSplitHandle` | `.html` `.htm` |
-| Web | `MhtmlSplitHandle` | `.mhtml` `.mht` |
-| Office | `DocSplitHandle` | `.docx` `.docm` |
-| Office | `PptxSplitHandle` | `.pptx` `.ppsx` `.potx` `.ppsm` `.potm` |
-| Office | `PptSplitHandle` | `.ppt` `.dps` |
-| Office | `WpsSplitHandle` | `.wps` `.et` |
-| Office | `RtfSplitHandle` | `.rtf` |
-| Office | `OdfSplitHandle` | `.odt` `.ods` `.odp` `.fodt` `.fods` `.fodp` |
-| PDF | `PdfSplitHandle` | `.pdf` |
-| Spreadsheet | `XlsxSplitHandle` | `.xlsx` `.xlsm` |
-| Spreadsheet | `XlsSplitHandle` | `.xls` |
-| Spreadsheet | `CsvSplitHandle` | `.csv` `.tsv` |
-| Mind map | `XmindSplitHandle` | `.xmind` |
-| Ebook | `EpubSplitHandle` | `.epub` |
-| Ebook | `MobiSplitHandle` | `.mobi` `.azw` `.azw3` |
-| Mail | `EmlSplitHandle` | `.eml` |
-| Mail | `MsgSplitHandle` | `.msg` |
-| Archive | `ZipSplitHandle` | `.zip` |
-| Archive | `TarSplitHandle` | `.tar` `.tar.gz` `.tgz` `.tar.bz2` |
-| Archive | `SevenZipSplitHandle` | `.7z` |
-| Image | `ImageSplitHandle` | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.tiff` `.tif` `.webp` (+ `.heic` `.heif` with `image`) |
-| Text | `TextSplitHandle` | `.txt` `.md` `.markdown` `.log` `.json` `.jsonl` `.ndjson` `.yaml` `.yml` `.toml` `.ini` `.cfg` `.conf` `.rst` `.tex` `.sql` `.py` `.js` `.ts` `.tsx` `.jsx` `.sh` `.bash` `.ps1` `.css` `.scss` `.xml` |
+30 handlers covering 197 declared extensions. Every parser except `charset-normalizer` (text decoding) is an **optional extra**: a handler whose parser is missing reports `400 Unsupported file format` instead of breaking `import smart_slice`.
+
+| Category | Handler | Extensions | Parser |
+|----------|---------|-----------|--------|
+| Web | `HTMLSplitHandle` | `.html` `.htm` `.xhtml` `.shtml` | markdownify + bs4 |
+| Web | `MhtmlSplitHandle` | `.mhtml` `.mht` | markdownify |
+| Office | `DocSplitHandle` | `.docx` `.docm` `.doc` `.dotx` `.dotm` | python-docx |
+| PDF | `PdfSplitHandle` | `.pdf` | pypdf + Pillow |
+| Spreadsheet | `XlsxSplitHandle` | `.xlsx` `.xlsm` `.xltx` `.xltm` | openpyxl |
+| Spreadsheet | `XlsSplitHandle` | `.xls` | xlrd |
+| Spreadsheet | `CsvSplitHandle` | `.csv` `.tsv` `.tab` | stdlib csv |
+| Archive | `ZipSplitHandle` | `.zip` | stdlib zipfile |
+| Mind map | `XmindSplitHandle` | `.xmind` | stdlib zipfile + json |
+| Office | `PptxSplitHandle` | `.pptx` `.pptm` `.ppsx` `.ppsm` `.potx` `.potm` | python-pptx |
+| Office | `PptSplitHandle` | `.ppt` `.dps` | olefile / python-pptx |
+| Office | `WpsSplitHandle` | `.wps` `.et` | python-docx / openpyxl |
+| Office | `RtfSplitHandle` | `.rtf` | striprtf |
+| Office | `OdfSplitHandle` | `.odt` `.ods` `.odp` `.fodt` `.fods` `.fodp` | stdlib zipfile + xml |
+| Ebook | `EpubSplitHandle` | `.epub` | stdlib zipfile + bs4 |
+| Mail | `EmlSplitHandle` | `.eml` | stdlib email + bs4 |
+| Mail | `MsgSplitHandle` | `.msg` | extract-msg + bs4 |
+| Ebook | `MobiSplitHandle` | `.mobi` `.azw` `.azw1` `.azw3` `.azw4` `.prc` | mobi + bs4 |
+| Archive | `TarSplitHandle` | `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.tar.xz` `.txz` | stdlib tarfile |
+| Archive | `SevenZipSplitHandle` | `.7z` | py7zr |
+| Image | `ImageSplitHandle` | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.tiff` `.tif` `.webp` `.heic` `.heif` | Pillow (+ pillow-heif) |
+| Ebook | `Fb2SplitHandle` | `.fb2` `.fb2.zip` | stdlib zipfile + xml |
+| Vector / structured | `SvgSplitHandle` | `.svg` `.svgz` | stdlib xml |
+| Vector / structured | `IpynbSplitHandle` | `.ipynb` | stdlib json |
+| Vector / structured | `SubtitleSplitHandle` | `.srt` `.vtt` `.ass` `.ssa` `.sub` | stdlib re |
+| Mail | `MboxSplitHandle` | `.mbox` | stdlib mailbox |
+| Vector / structured | `VcalendarSplitHandle` | `.ics` `.ifb` | stdlib |
+| Vector / structured | `VcardSplitHandle` | `.vcf` | stdlib |
+| Image | `ExtendedImageSplitHandle` | `.ico` `.cur` `.tga` `.pcx` `.dds` `.sgi` `.ppm` `.pgm` `.pbm` `.pnm` `.pfm` `.im` `.icns` `.qoi` `.jfif` `.jpe` `.apng` `.xbm` `.psd` (+ aliases) | Pillow |
+| Text / source | `TextSplitHandle` | `.txt` `.md` `.markdown` `.log` `.json` `.jsonl` `.ndjson` `.yaml` `.yml` `.toml` `.ini` `.cfg` `.conf` `.rst` `.tex` `.sql` and 60+ source/config extensions (`.py` `.js` `.ts` `.java` `.go` `.c` `.cpp` `.rs` `.rb` `.php` `.cs` `.swift` `.kt` `.scala` `.lua` `.r` `.sh` `.ps1` `.css` `.scss` `.xml` `.proto` `.graphql` `.adoc` `.org` `.diff` `.patch` `.po` `.properties` `.env` ...) | charset-normalizer |
 
 Archives are unpacked recursively; each inner file goes through the same dispatch. The text handler is the fallback for any decodable content whose extension is not otherwise claimed.
+
+### Not supported (rejected with `400`)
+
+These are deliberately rejected rather than force-decoded into garbage:
+
+| Category | Extensions | Why |
+|----------|-----------|-----|
+| Video | `.mp4` `.avi` `.mov` `.mkv` `.flv` `.wmv` `.webm` `.mpeg` `.mpg` `.3gp` `.rmvb` | no transcription pipeline |
+| Audio | `.mp3` `.wav` `.flac` `.aac` `.ogg` `.m4a` `.wma` `.opus` `.alac` `.aiff` `.amr` | no ASR |
+| Archive | `.rar` | no pure-Python decoder (rarfile needs the system `unrar` binary) |
+| Apple iWork | `.key` `.pages` `.numbers` | proprietary IWA container |
+| Legacy binary Office | old OLE `.wps` / `.et` / `.doc` | only the OOXML/zip variants are parsed; convert to `.docx` |
+| Executable / image | `.exe` `.dll` `.msi` `.dmg` `.apk` `.iso` | not documents |
+| Vector / raw photo | `.raw` | no universal decoder (vendor-private) |
+
+**Content-level rejections** (right extension, unparsable content): encrypted PDFs and
+image-only/scanned PDFs with no extractable text raise `500` naming the cause; encrypted or
+oversized archives raise `ResourceLimitError`. Local OCR is **off by default**
+(`SMART_SLICE_OCR_ENABLED=0`); enable it with the `ocr` extra to recover text from embedded
+and scanned images.
 
 ---
 

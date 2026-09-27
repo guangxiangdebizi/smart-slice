@@ -28,6 +28,12 @@ from smart_slice.handlers.csv_handler import CsvSplitHandle
 from smart_slice.handlers.doc import DocSplitHandle
 from smart_slice.handlers.eml import EmlSplitHandle
 from smart_slice.handlers.epub import EpubSplitHandle
+from smart_slice.handlers.fb2 import Fb2SplitHandle
+from smart_slice.handlers.ipynb import IpynbSplitHandle
+from smart_slice.handlers.mbox import MboxSplitHandle
+from smart_slice.handlers.subtitle import SubtitleSplitHandle
+from smart_slice.handlers.svg import SvgSplitHandle
+from smart_slice.handlers.vcalendar import VcalendarSplitHandle, VcardSplitHandle
 from smart_slice.handlers.html import HTMLSplitHandle
 from smart_slice.handlers.mobi import MobiSplitHandle
 from smart_slice.handlers.mhtml import MhtmlSplitHandle
@@ -73,8 +79,25 @@ split_handles = [
     EmlSplitHandle(),
     MsgSplitHandle(),
     MobiSplitHandle(),
+    Fb2SplitHandle(),
     TarSplitHandle(),
     SevenZipSplitHandle(),
+    # Phase 3（2026-09-27）：内层清单与公共 SPLIT_HANDLERS 对齐，补齐结构化文本
+    # 与扩展位图格式；仍须在 default_split_handle（TextSplitHandle）兜底之前
+    SvgSplitHandle(),
+    IpynbSplitHandle(),
+    SubtitleSplitHandle(),
+    MboxSplitHandle(),
+    VcalendarSplitHandle(),
+    VcardSplitHandle(),
+    # 注意（Phase 3，2026-09-27 核查确认）：内层清单**刻意不含**图片 handler
+    # （ImageSplitHandle / ExtendedImageSplitHandle）。这是 Phase 2-B
+    # （2026-09-18，feat/inline-image-ocr）的既有决策，由
+    # tests/test_service.py::OcrInjectionBranchTests::test_zip_inner_images_do_not_receive_extractor
+    # 固化：zip 内嵌图片经 ZipSplitHandle 自身的 markdown 引用收集 + save_image
+    # 字节交付路径处理，独立图片文件在内层被跳过（记一次 skip 日志、不阻断整包）。
+    # Phase 3 曾尝试补入以让内层 .png 产出文件名占位段落，因与该决策冲突而回退；
+    # 若要改变内嵌图片语义，须作为独立的架构变更走评审，不在格式扩展范围内。
     default_split_handle,
 ]
 

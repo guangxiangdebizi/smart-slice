@@ -8,7 +8,7 @@ _log = get_logger("doc")
 
 
 from smart_slice._i18n import gettext as _
-from smart_slice.exceptions import SliceError
+from smart_slice.exceptions import SliceError, ResourceLimitError
 from smart_slice.types import ImageAsset
 from smart_slice import _uuid as uuid
 
@@ -19,13 +19,23 @@ import traceback
 from functools import reduce
 from typing import List
 
-from docx import Document, ImagePart
-from docx.oxml import ns
-from docx.table import Table
-from docx.text.paragraph import Paragraph
+try:
+    from docx import Document, ImagePart
+    from docx.oxml import ns
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    DOCX_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[office]
+    Document = ImagePart = ns = Table = Paragraph = None
+    DOCX_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice.chunker import SplitModel
+
+#: .doc 与 .docx/.docm 同由 python-docx 解析（老二进制 .doc 见 _LEGACY_DOC 说明）
+DOC_EXTENSIONS = ('.docx', '.docm', '.doc', '.dotx', '.dotm')
+#: OLE 复合文档魔数（老二进制 .doc/.ppt/.msg 共用）
+OLE_MAGIC = b'\xd0\xcf\x11\xe0'
 
 default_pattern_list = [re.compile('(?<=^)# .*|(?<=\\n)# .*'),
                         re.compile('(?<=\\n)(?<!#)## (?!#).*|(?<=^)(?<!#)## (?!#).*'),
@@ -38,7 +48,16 @@ default_pattern_list = [re.compile('(?<=^)# .*|(?<=\\n)# .*'),
                         re.compile("(?<!\n)\n\n+")]
 
 old_docx_nsmap = {'v': 'urn:schemas-microsoft-com:vml'}
-combine_nsmap = {**ns.nsmap, **old_docx_nsmap}
+# combine_nsmap 依赖 python-docx 的 ns.nsmap（可选 extra）：延迟到首次使用时构建，
+# 使 docx 缺失时模块仍可 import（support() 已门控，不会走到这里）
+_combine_nsmap_cache = None
+
+
+def _get_combine_nsmap():
+    global _combine_nsmap_cache
+    if _combine_nsmap_cache is None:
+        _combine_nsmap_cache = {**ns.nsmap, **old_docx_nsmap}
+    return _combine_nsmap_cache
 
 
 def image_to_mode(image, doc: Document, images_list, get_image_id):
@@ -57,7 +76,7 @@ def image_to_mode(image, doc: Document, images_list, get_image_id):
 
 def get_paragraph_element_images(paragraph_element, doc: Document, images_list, get_image_id):
     images_xpath_list = [(".//pic:pic", lambda img: img.xpath('.//a:blip/@r:embed')),
-                         (".//w:pict", lambda img: img.xpath('.//v:imagedata/@r:id', namespaces=combine_nsmap))]
+                         (".//w:pict", lambda img: img.xpath('.//v:imagedata/@r:id', namespaces=_get_combine_nsmap()))]
     images = []
     for images_xpath, get_image_id_handle in images_xpath_list:
         try:
@@ -214,6 +233,14 @@ class DocSplitHandle(BaseSplitHandle):
                 with_filter = with_filter.lower() == 'true'
             image_list = []
             buffer = get_buffer(file)
+            # 老二进制 .doc（OLE 复合文档）python-docx 读不了：明确报 400 不支持，
+            # 而不是让它抛 BadZipFile 被兜底成 500 解析失败（与 .wps/.et 老二进制一致）
+            if buffer[:4] == OLE_MAGIC:
+                raise SliceError(
+                    400,
+                    _("Legacy binary Word .doc files are not supported; "
+                      "convert the document to .docx first"),
+                )
             doc = Document(io.BytesIO(buffer))
             content = self.to_md(doc, image_list, get_image_id_func())
             if len(image_list) > 0:
@@ -222,6 +249,10 @@ class DocSplitHandle(BaseSplitHandle):
                 split_model = SplitModel(pattern_list, with_filter, limit)
             else:
                 split_model = SplitModel(default_pattern_list, with_filter=with_filter, limit=limit)
+        except (SliceError, ResourceLimitError):
+            # 老二进制 .doc 的 400、资源上限的 ResourceLimitError 原样透传，
+            # 不被下方 BaseException 兜底改写成 500（对齐 PdfSplitHandle 行为）
+            raise
         except BaseException as e:
             _log.error(f"Error processing DOC file {file.name}: {e}, {traceback.format_exc()}")
             # 解析失败显式报错（对齐 PdfSplitHandle 行为），避免静默返回空段落
@@ -236,9 +267,11 @@ class DocSplitHandle(BaseSplitHandle):
         }
 
     def support(self, file, get_buffer):
+        # python-docx 为可选 extra（smart-slice[office]）：缺失时不认领
+        if not DOCX_AVAILABLE:
+            return False
         file_name: str = file.name.lower()
-        if file_name.endswith(".docx") or file_name.endswith(".doc") or file_name.endswith(
-                ".DOC") or file_name.endswith(".DOCX"):
+        if file_name.endswith(DOC_EXTENSIONS):
             return True
         return False
 

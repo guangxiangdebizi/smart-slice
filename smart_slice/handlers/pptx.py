@@ -28,7 +28,12 @@ import os
 import traceback
 from typing import List
 
-from pptx import Presentation
+try:
+    from pptx import Presentation
+    PPTX_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[office]
+    Presentation = None
+    PPTX_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice._validation import validate_ooxml
@@ -38,6 +43,10 @@ from smart_slice.handlers._utils import build_split_model, md_table
 PRESENTATION_CONTENT_TYPES = {
     '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml',
     '.pptm': 'application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml',
+    '.ppsx': 'application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml',
+    '.ppsm': 'application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml',
+    '.potx': 'application/vnd.openxmlformats-officedocument.presentationml.template.main+xml',
+    '.potm': 'application/vnd.ms-powerpoint.template.macroEnabled.main+xml',
 }
 
 
@@ -116,7 +125,8 @@ def _presentation_to_md(buffer: bytes, image_list, name='') -> str:
 
 class PptxSplitHandle(BaseSplitHandle):
     def support(self, file, get_buffer):
-        return file.name.lower().endswith(tuple(PRESENTATION_CONTENT_TYPES))
+        # python-pptx 为可选 extra（smart-slice[office]）：缺失时不认领
+        return PPTX_AVAILABLE and file.name.lower().endswith(tuple(PRESENTATION_CONTENT_TYPES))
 
     def handle(self, file, pattern_list: List, with_filter: bool, limit: int, get_buffer, save_image):
         image_list = []

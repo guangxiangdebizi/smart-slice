@@ -67,8 +67,21 @@ are generated. Treat them as read-only:
   public facade (`__init__.py`), `chunker.py` (chunking policy - it graduated out of
   the generated set), `options.py`, `patterns.py`, `_config.py`, `_logging.py`,
   `_i18n.py`, `_uuid.py`, `_markdown.py`, `_accel.py`, `_speedup_py.py`,
-  `exceptions.py`, `types.py`, `handlers/__init__.py`, `qa/__init__.py`,
-  `chunking/`, and the CLI (`__main__.py`).
+  `_optional.py`, `exceptions.py`, `types.py`, `handlers/__init__.py`,
+  `qa/__init__.py`, `chunking/`, the CLI (`__main__.py`), and the format handlers
+  added in Phase 3 that have no counterpart on the source platform:
+  `handlers/svg.py`, `handlers/ipynb.py`, `handlers/subtitle.py`,
+  `handlers/fb2.py`, `handlers/mbox.py`, `handlers/vcalendar.py`,
+  `handlers/raster_image.py`.
+
+Phase 3 (2026-09-27) also extended a few *generated* modules by hand, following the
+existing Phase 2-A precedent (those files already carry hand-maintenance comments):
+the `TEXT_EXTENSIONS` list in `handlers/text.py`, the inner-file dispatch list in
+`handlers/zip_handler.py`, the OOXML content-type maps and extension constants in
+`handlers/pptx.py` / `handlers/doc.py` / `handlers/html.py` / `handlers/archive.py` /
+`handlers/mobi.py`, and the optional-import guards across the handler set. If the
+porting tool is re-run, these edits must be folded into its anchored-patch table (see
+`docs/PORTING.md`) or they will be lost.
 
 Note the two scan implementations must stay in lock-step: if you change
 `_speedup_py.scan_heading_candidates`, mirror it in `csrc/_speedup.c`. The scan is a

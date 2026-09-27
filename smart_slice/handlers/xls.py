@@ -14,7 +14,12 @@ import traceback
 import zipfile
 from typing import List
 
-import xlrd
+try:
+    import xlrd
+    XLRD_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[office]
+    xlrd = None
+    XLRD_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice._validation import ParserLimits, validate_input
@@ -139,6 +144,9 @@ class XlsSplitHandle(BaseSplitHandle):
             raise SliceError(400, 'Invalid, encrypted or damaged binary Excel workbook') from e
 
     def support(self, file, get_buffer):
+        # xlrd 为可选 extra（smart-slice[office]）：缺失时不认领
+        if not XLRD_AVAILABLE:
+            return False
         file_name: str = file.name.lower()
         buffer = get_buffer(file)
         if file_name.endswith((".xls", ".xlt")):

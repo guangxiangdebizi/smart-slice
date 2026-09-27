@@ -12,7 +12,12 @@ from smart_slice.exceptions import SliceError, ResourceLimitError
 from email import policy
 from email.errors import MessageError
 from email.parser import BytesParser
-from markdownify import markdownify
+try:
+    from markdownify import markdownify
+    MARKUP_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[markup]
+    markdownify = None
+    MARKUP_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 from smart_slice._validation import ParserLimits, decode_text, validate_input
@@ -79,7 +84,8 @@ def _mhtml_content(buffer):
 
 class MhtmlSplitHandle(BaseSplitHandle):
     def support(self, file, get_buffer):
-        return file.name.lower().endswith(('.mht', '.mhtml'))
+        # markdownify 为可选 extra（smart-slice[markup]）：缺失时不认领
+        return MARKUP_AVAILABLE and file.name.lower().endswith(('.mht', '.mhtml'))
 
     def handle(self, file, pattern_list, with_filter, limit, get_buffer, save_image):
         content = _mhtml_content(get_buffer(file))

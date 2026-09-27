@@ -22,7 +22,7 @@ from setuptools import Extension, setup
 
 setup(
     name="smart-slice-accel",  # build-only stub; the real metadata is in pyproject.toml
-    version="0.2.0",
+    version="0.3.0",
     py_modules=[],  # do not auto-discover packages; the extension lands in smart_slice/
     ext_modules=[
         Extension(

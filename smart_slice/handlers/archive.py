@@ -25,7 +25,12 @@ import tarfile
 import traceback
 from typing import List
 
-import py7zr
+try:
+    import py7zr
+    PY7ZR_AVAILABLE = True
+except ImportError:  # optional extra: smart-slice[archive]
+    py7zr = None
+    PY7ZR_AVAILABLE = False
 
 from smart_slice.handlers.base import BaseSplitHandle
 
@@ -56,7 +61,7 @@ def _safe_member_name(name: str) -> str:
 
 
 class TarSplitHandle(BaseSplitHandle):
-    TAR_EXTENSIONS = (".tar", ".tar.gz", ".tgz", ".tar.bz2")
+    TAR_EXTENSIONS = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".txz")
 
     def support(self, file, get_buffer):
         return file.name.lower().endswith(self.TAR_EXTENSIONS)
@@ -101,7 +106,9 @@ class TarSplitHandle(BaseSplitHandle):
 
 class SevenZipSplitHandle(BaseSplitHandle):
     def support(self, file, get_buffer):
-        return file.name.lower().endswith(".7z")
+        # py7zr 为可选 extra（smart-slice[archive]）：缺失时不认领 .7z，
+        # 由公共层统一报 400 不支持，而不是在 import 阶段炸掉整个包
+        return PY7ZR_AVAILABLE and file.name.lower().endswith(".7z")
 
     def handle(self, file, pattern_list: List, with_filter: bool, limit: int, get_buffer, save_image):
         import os

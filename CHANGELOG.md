@@ -5,6 +5,88 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-27
+
+Two themes: a **correctness fix for the published wheel** (a clean install could not
+even `import smart_slice`) and a **broad format expansion** (78 -> 197 declared
+extensions, 22 -> 30 handlers).
+
+### Fixed
+
+- **The wheel crashed on import in a clean environment.** 34 module-level imports of
+  optional parsers (`py7zr`, `python-docx`, `openpyxl`, `pypdf`, `markdownify`, ...)
+  were unguarded, so `pip install smart-slice` (core only) raised
+  `ModuleNotFoundError` at `import smart_slice` - directly contradicting the documented
+  "a handler whose parser is missing simply reports unsupported instead of crashing".
+  Every optional import is now wrapped, and each handler's `support()` returns False
+  when its parser is absent, so the format degrades to `400 Unsupported file format:
+  .pdf` instead of breaking the package. Verified in a bare venv with only
+  `charset-normalizer` installed.
+- **Legacy binary `.doc` (OLE compound file) reported `500` instead of `400`.**
+  `DocSplitHandle` claimed `.doc` by extension, then handed it to `python-docx`, which
+  raised `BadZipFile`. A binary `.doc` is now detected by its OLE magic and rejected
+  with `400 ... convert the document to .docx first`, matching the existing
+  `.wps`/`.et` legacy-binary behaviour. `DocSplitHandle.handle` also gained the
+  `except (SliceError, ResourceLimitError): raise` passthrough the other handlers have,
+  so a 400 is no longer swallowed and re-raised as 500.
+- **Source/config extensions were silently mis-sliced.** `.java`, `.go`, `.c`, `.rs`,
+  `.properties`, `.adoc`, `.diff` and ~50 more were only reachable through the
+  "decodes as text" fallback, which used the *markdown* heading patterns - so a
+  `# comment` line in source code was extracted as a section title. They are now first-
+  class members of `TEXT_EXTENSIONS`, which routes them to `LITERAL_EXTENSIONS`
+  (blank-line/length splitting only); a `#` in code stays in the body.
+- **mbox bodies were dropped.** `mailbox.mbox` builds legacy `Compat32` messages that
+  have no `get_content()`, so every body part failed and was skipped. The mailbox is now
+  parsed with `policy=email.policy.default` (matching `EmlSplitHandle`); multi-message
+  archives produce one correctly-titled paragraph per message.
+
+### Added
+
+- **8 new handlers**, all pure-stdlib so they work even in a bare install:
+  - `SvgSplitHandle` - `.svg` `.svgz` (gzip-aware): extracts visible `<text>`/`<tspan>`,
+    drops `<script>`/`<style>`/`<defs>`.
+  - `IpynbSplitHandle` - `.ipynb`: markdown cells kept, code cells fenced (so their `#`
+    comments are not mistaken for headings), `text/plain` outputs collected.
+  - `SubtitleSplitHandle` - `.srt` `.vtt` `.ass` `.ssa` `.sub`: strips indices,
+    timecodes and ASS `Script Info`/`Format` metadata, keeps only cue text.
+  - `Fb2SplitHandle` - `.fb2` `.fb2.zip`: FictionBook XML; section titles map to
+    Markdown headings. Registered *before* `ZipSplitHandle` so `.fb2.zip` is not treated
+    as a generic archive.
+  - `MboxSplitHandle` - `.mbox`: per-message subject + body.
+  - `VcalendarSplitHandle` / `VcardSplitHandle` - `.ics` `.ifb` / `.vcf`: unfold
+    RFC 5545/6350 lines, keep only human-readable fields (event summary -> title;
+    time/location/description, or name/phone/email/address -> key/value rows).
+  - `ExtendedImageSplitHandle` - 25 more Pillow-decodable raster containers
+    (`.ico` `.tga` `.pcx` `.dds` `.sgi` `.ppm`/`.pgm`/`.pbm` `.im` `.icns` `.qoi`
+    `.jfif` `.apng` `.xbm` `.psd` + aliases). Subclasses `ImageSplitHandle`, so the OCR
+    branch and `save_image` contract are inherited unchanged.
+- **OOXML variants that were declared but rejected now parse:** `.pptm` `.ppsm` `.potm`
+  (added to the presentation content-type map) and `.dotx` `.dotm` `.xltx` `.xltm`
+  (declared and claimed). `.ppsx`/`.potx` content types were also completed.
+- **`.tar.xz` / `.txz`** (stdlib `tarfile` already supported xz), **`.azw1`/`.azw4`/
+  `.prc`** Kindle variants, **`.xhtml`/`.shtml`**, **`.tab`** (CSV), **`.xlt`** (binary
+  Excel template) are now recognised and declared.
+- **`smart_slice._optional`** - single source of truth mapping each optional import to
+  its pip extra, powering both the `support()` gates and the "run pip install
+  smart-slice[office] to enable it" error text.
+- Tests: `tests/test_format_expansion.py` (32 cases) covering every new handler, the
+  bare-environment degradation, the source-fidelity fix, and the OOXML variant
+  declarations. Suite is now 216 tests.
+
+### Changed
+
+- `HANDLER_EXTENSIONS` grew from 78 to 197 declared extensions across 30 handlers;
+  README / README_CN format tables were regenerated from the live registry and now
+  include a parser column and an explicit "not supported (400)" table.
+- The zip/tar/7z **inner-file** dispatch list was extended with the new structured
+  text handlers (`Fb2`, `Svg`, `Ipynb`, `Subtitle`, `Mbox`, `Vcalendar`, `Vcard`), so
+  those formats are also recognised inside archives. Image handlers stay out of that
+  list on purpose: excluding `ImageSplitHandle` from archive members is a deliberate
+  Phase 2-B decision (embedded images travel through the zip handler's own markdown
+  reference collection + `save_image` path), pinned by
+  `test_zip_inner_images_do_not_receive_extractor`. Adding it back was attempted and
+  reverted; changing embedded-image semantics needs its own reviewed change.
+
 ## [0.2.0] - 2026-09-27
 
 Adds configurable chunking (size **and** overlap) in both default and fully

@@ -123,32 +123,59 @@ rows = slice_bytes(raw_bytes, "deck.pptx", limit=1000, save_image=save_image)
 
 ## 支持格式
 
-| 类别 | Handler | 扩展名 |
-|------|---------|--------|
-| Web | `HTMLSplitHandle` | `.html` `.htm` |
-| Web | `MhtmlSplitHandle` | `.mhtml` `.mht` |
-| Office | `DocSplitHandle` | `.docx` `.docm` |
-| Office | `PptxSplitHandle` | `.pptx` `.ppsx` `.potx` `.ppsm` `.potm` |
-| Office | `PptSplitHandle` | `.ppt` `.dps` |
-| Office | `WpsSplitHandle` | `.wps` `.et` |
-| Office | `RtfSplitHandle` | `.rtf` |
-| Office | `OdfSplitHandle` | `.odt` `.ods` `.odp` `.fodt` `.fods` `.fodp` |
-| PDF | `PdfSplitHandle` | `.pdf` |
-| 表格 | `XlsxSplitHandle` | `.xlsx` `.xlsm` |
-| 表格 | `XlsSplitHandle` | `.xls` |
-| 表格 | `CsvSplitHandle` | `.csv` `.tsv` |
-| 思维导图 | `XmindSplitHandle` | `.xmind` |
-| 电子书 | `EpubSplitHandle` | `.epub` |
-| 电子书 | `MobiSplitHandle` | `.mobi` `.azw` `.azw3` |
-| 邮件 | `EmlSplitHandle` | `.eml` |
-| 邮件 | `MsgSplitHandle` | `.msg` |
-| 压缩包 | `ZipSplitHandle` | `.zip` |
-| 压缩包 | `TarSplitHandle` | `.tar` `.tar.gz` `.tgz` `.tar.bz2` |
-| 压缩包 | `SevenZipSplitHandle` | `.7z` |
-| 图片 | `ImageSplitHandle` | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.tiff` `.tif` `.webp`（装 `image` 后含 `.heic` `.heif`） |
-| 文本 | `TextSplitHandle` | `.txt` `.md` `.markdown` `.log` `.json` `.jsonl` `.ndjson` `.yaml` `.yml` `.toml` `.ini` `.cfg` `.conf` `.rst` `.tex` `.sql` `.py` `.js` `.ts` `.tsx` `.jsx` `.sh` `.bash` `.ps1` `.css` `.scss` `.xml` |
+30 个 handler、197 个声明扩展名。除 `charset-normalizer`（文本解码）外，每个解析器都是**可选 extra**：解析器缺失时该格式报 `400 Unsupported file format`，而不是让 `import smart_slice` 崩溃。
 
-压缩包递归解包，内层文件经同一分发流程处理。文本 handler 为兜底，接收任何可解码且未被其它 handler 命中的内容。
+| 类别 | Handler | 扩展名 | 解析器 |
+|------|---------|--------|--------|
+| Web | `HTMLSplitHandle` | `.html` `.htm` `.xhtml` `.shtml` | markdownify + bs4 |
+| Web | `MhtmlSplitHandle` | `.mhtml` `.mht` | markdownify |
+| Office | `DocSplitHandle` | `.docx` `.docm` `.doc` `.dotx` `.dotm` | python-docx |
+| PDF | `PdfSplitHandle` | `.pdf` | pypdf + Pillow |
+| 表格 | `XlsxSplitHandle` | `.xlsx` `.xlsm` `.xltx` `.xltm` | openpyxl |
+| 表格 | `XlsSplitHandle` | `.xls` | xlrd |
+| 表格 | `CsvSplitHandle` | `.csv` `.tsv` `.tab` | 标准库 csv |
+| 压缩包 | `ZipSplitHandle` | `.zip` | 标准库 zipfile |
+| 思维导图 | `XmindSplitHandle` | `.xmind` | 标准库 zipfile + json |
+| Office | `PptxSplitHandle` | `.pptx` `.pptm` `.ppsx` `.ppsm` `.potx` `.potm` | python-pptx |
+| Office | `PptSplitHandle` | `.ppt` `.dps` | olefile / python-pptx |
+| Office | `WpsSplitHandle` | `.wps` `.et` | python-docx / openpyxl |
+| Office | `RtfSplitHandle` | `.rtf` | striprtf |
+| Office | `OdfSplitHandle` | `.odt` `.ods` `.odp` `.fodt` `.fods` `.fodp` | 标准库 zipfile + xml |
+| 电子书 | `EpubSplitHandle` | `.epub` | 标准库 zipfile + bs4 |
+| 邮件 | `EmlSplitHandle` | `.eml` | 标准库 email + bs4 |
+| 邮件 | `MsgSplitHandle` | `.msg` | extract-msg + bs4 |
+| 电子书 | `MobiSplitHandle` | `.mobi` `.azw` `.azw1` `.azw3` `.azw4` `.prc` | mobi + bs4 |
+| 压缩包 | `TarSplitHandle` | `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.tar.xz` `.txz` | 标准库 tarfile |
+| 压缩包 | `SevenZipSplitHandle` | `.7z` | py7zr |
+| 图片 | `ImageSplitHandle` | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.tiff` `.tif` `.webp` `.heic` `.heif` | Pillow（+ pillow-heif） |
+| 电子书 | `Fb2SplitHandle` | `.fb2` `.fb2.zip` | 标准库 zipfile + xml |
+| 矢量/结构化 | `SvgSplitHandle` | `.svg` `.svgz` | 标准库 xml |
+| 矢量/结构化 | `IpynbSplitHandle` | `.ipynb` | 标准库 json |
+| 矢量/结构化 | `SubtitleSplitHandle` | `.srt` `.vtt` `.ass` `.ssa` `.sub` | 标准库 re |
+| 邮件 | `MboxSplitHandle` | `.mbox` | 标准库 mailbox |
+| 矢量/结构化 | `VcalendarSplitHandle` | `.ics` `.ifb` | 标准库 |
+| 矢量/结构化 | `VcardSplitHandle` | `.vcf` | 标准库 |
+| 图片 | `ExtendedImageSplitHandle` | `.ico` `.cur` `.tga` `.pcx` `.dds` `.sgi` `.ppm` `.pgm` `.pbm` `.pnm` `.pfm` `.im` `.icns` `.qoi` `.jfif` `.jpe` `.apng` `.xbm` `.psd`（含别名） | Pillow |
+| 文本/源码 | `TextSplitHandle` | `.txt` `.md` `.markdown` `.log` `.json` `.jsonl` `.yaml` `.toml` `.ini` `.rst` `.tex` `.sql` 及 60+ 源码/配置扩展名（`.py` `.js` `.ts` `.java` `.go` `.c` `.cpp` `.rs` `.rb` `.php` `.cs` `.swift` `.kt` `.scala` `.lua` `.r` `.sh` `.ps1` `.css` `.xml` `.proto` `.graphql` `.adoc` `.org` `.diff` `.patch` `.po` `.properties` `.env` …） | charset-normalizer |
+
+
+### 明确不支持（抛 `400`）
+
+以下类型是刻意拒绝、而非硬解码成乱码：
+
+| 类别 | 扩展名 | 原因 |
+|------|--------|------|
+| 视频 | `.mp4` `.avi` `.mov` `.mkv` `.flv` `.wmv` `.webm` `.mpeg` `.mpg` `.3gp` `.rmvb` | 无转写链路 |
+| 音频 | `.mp3` `.wav` `.flac` `.aac` `.ogg` `.m4a` `.wma` `.opus` `.alac` `.aiff` `.amr` | 无 ASR 能力 |
+| 压缩包 | `.rar` | 无纯 Python 解析方案（rarfile 依赖系统 unrar 二进制） |
+| Apple iWork | `.key` `.pages` `.numbers` | 私有 IWA 容器 |
+| 老二进制 Office | 老 OLE 的 `.wps` / `.et` / `.doc` | 只解析 OOXML/zip 变体；请先转 `.docx` |
+| 可执行/镜像 | `.exe` `.dll` `.msi` `.dmg` `.apk` `.iso` | 非文档 |
+| 矢量/原始照片 | `.raw` | 无通用解码器（各家相机私有） |
+
+**内容级拒绝**（扩展名对、内容解析不出）：加密 PDF、无文本无图的扫描版 PDF 抛 `500` 并
+注明原因；加密或超限压缩包抛 `ResourceLimitError`。本地 OCR **默认关闭**
+（`SMART_SLICE_OCR_ENABLED=0`），装 `ocr` extra 并开启后可从内嵌图与扫描图恢复文本。
 
 ---
 

@@ -10,7 +10,10 @@ _log = get_logger("qa.xlsx")
 import io
 import traceback
 
-import openpyxl
+try:
+    import openpyxl
+except ImportError:  # optional extra: smart-slice[office]
+    openpyxl = None
 
 from smart_slice.qa._base import BaseParseQAHandle, get_title_row_index_dict, get_row_value
 from smart_slice.handlers._xlsx_images import xlsx_embed_cells_images

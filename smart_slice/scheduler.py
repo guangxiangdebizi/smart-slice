@@ -923,16 +923,29 @@ def _as_job(item: Any, position: int) -> SliceJob:
     )
 
 
+#: private slice_kwarg carrying the batch-wide ImageCollector (see slice_many)
+_COLLECTOR_KEY = "_collector"
+
+
 def _slice_one(job: SliceJob, defaults: Optional[Dict[str, Any]] = None) -> Any:
     """Slice a single job.  Module level (not a closure) so it stays picklable."""
-    from smart_slice import slice_bytes
-
     kwargs: Dict[str, Any] = dict(defaults or {})
     kwargs.update(job.kwargs)
+    collector = kwargs.pop(_COLLECTOR_KEY, None)
     if job.content is not None:
-        return slice_bytes(job.content, job.name, **kwargs)
-    with open(job.path, "rb") as handle:
-        content = handle.read()
+        content = job.content
+    else:
+        with open(job.path, "rb") as handle:
+            content = handle.read()
+    if collector is not None:
+        # multimodal path: handlers rarely emit pictures on their own (a
+        # standalone .png or an .html never does), so the job goes through
+        # slice_multimodal, which also recovers what the handlers missed.
+        from smart_slice import slice_multimodal
+
+        return slice_multimodal(content, job.name, collector=collector, **kwargs).paragraphs
+    from smart_slice import slice_bytes
+
     return slice_bytes(content, job.name, **kwargs)
 
 
@@ -950,6 +963,10 @@ class BatchReport:
     policy: Optional[SchedulerPolicy] = None
     width: int = 1
     elapsed: float = 0.0
+    #: every image the batch produced, when ``slice_many(..., collect_images=True)``
+    #: installed a collector.  Batch-wide and unordered with respect to documents -
+    #: per-document attribution needs :func:`smart_slice.slice_multimodal`.
+    images: List[Any] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -1003,11 +1020,14 @@ class BatchReport:
     def summary(self) -> str:
         """One-line human readable report (used by the CLI's ``--stats``)."""
         done = len(self.outcomes) - len(self.failures)
-        return (
+        text = (
             f"{done}/{len(self.outcomes)} documents sliced in {self.elapsed * 1000:.0f} ms "
             f"(width={self.width}, backend={self.policy.backend if self.policy else '?'}, "
             f"pin_cores={bool(self.policy and self.policy.pin_cores)})"
         )
+        if self.images:
+            text += f", {len(self.images)} images"
+        return text
 
 
 def slice_many(
@@ -1023,6 +1043,9 @@ def slice_many(
     max_concurrency: Optional[int] = None,
     task_setup: Optional[Callable[[], None]] = None,
     task_teardown: Optional[Callable[[], None]] = None,
+    collect_images: bool = False,
+    dedupe_images: bool = True,
+    max_images: Optional[int] = None,
     **slice_kwargs: Any,
 ) -> BatchReport:
     """Slice a batch of documents under a scheduling policy.
@@ -1057,9 +1080,41 @@ def slice_many(
     ``save_image`` and ``progress_hook`` are shared by every worker - they must
     be thread-safe (a lock around your own list is enough).  They also make the
     batch unpicklable, so ``backend="process"`` needs them left out.
+
+    :param collect_images: route every job through
+                           :func:`smart_slice.slice_multimodal` with one shared
+                           :class:`~smart_slice.multimodal.ImageCollector` and
+                           publish what it caught on ``report.images`` (default
+                           False).  The paragraphs themselves are unchanged, so
+                           the report reads exactly as before.  An explicit
+                           ``save_image=`` still wins and keeps the plain
+                           ``slice_bytes`` path.  Because the collector holds a
+                           lock, it forces ``backend="thread"`` or ``"serial"`` -
+                           a process pool cannot pickle it, so asking for both
+                           raises instead of silently returning an empty list.
+    :param dedupe_images:  collapse content-identical images across the whole
+                           batch onto one id (default True)
+    :param max_images:     batch-wide ceiling on collected images (``None`` =
+                           :data:`~smart_slice.multimodal.DEFAULT_MAX_IMAGES`)
     """
     jobs = as_slice_jobs(inputs)
     slice_kwargs = dict(slice_kwargs)
+    collector = None
+    if collect_images and slice_kwargs.get("save_image") is None:
+        from .multimodal import DEFAULT_MAX_IMAGES, ImageCollector
+
+        if backend == BACKEND_PROCESS or (
+            isinstance(policy, SchedulerPolicy) and policy.backend == BACKEND_PROCESS
+        ):
+            raise ValueError(
+                "collect_images=True needs a thread or serial backend: "
+                "an ImageCollector holds a lock and cannot be pickled"
+            )
+        collector = ImageCollector(
+            dedupe=dedupe_images,
+            max_images=DEFAULT_MAX_IMAGES if max_images is None else max_images,
+        )
+        slice_kwargs[_COLLECTOR_KEY] = collector
     if "options" not in slice_kwargs:
         # A worker thread starts with an *empty* context, so the ambient
         # ChunkingOptions published by an enclosing ``use_options(...)`` block
@@ -1084,14 +1139,18 @@ def slice_many(
         task_teardown=task_teardown,
     )
     if not jobs:
-        return BatchReport(outcomes=[], policy=resolved, width=1, elapsed=0.0)
+        return BatchReport(outcomes=[], policy=resolved, width=1, elapsed=0.0,
+                           images=collector.assets if collector is not None else [])
 
     worker = _job_worker(slice_kwargs)
     width = resolved.width(len(jobs))
     started = time.perf_counter()
     outcomes = run_parallel(jobs, worker, resolved)
     elapsed = time.perf_counter() - started
-    return BatchReport(outcomes=outcomes, policy=resolved, width=width, elapsed=elapsed)
+    return BatchReport(
+        outcomes=outcomes, policy=resolved, width=width, elapsed=elapsed,
+        images=collector.assets if collector is not None else [],
+    )
 
 
 def _job_worker(slice_kwargs: Dict[str, Any]):

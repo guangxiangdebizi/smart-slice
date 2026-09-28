@@ -14,12 +14,16 @@ a 12-row table and a code fence; 1,693 paragraphs out):
 | 0.1.0 (as extracted) | 394 ms | 1.40 MB/s |
 | 0.2.0 pure Python | 144 ms | 3.83 MB/s |
 | 0.2.0 + C accelerator | 139 ms | 3.97 MB/s |
+| 0.5.0 (+ pattern-level cache) | 124-131 ms | 4.2-4.4 MB/s |
 
-**2.8x faster overall.** Roughly 96% of that gain came from algorithmic fixes in
+**~3x faster overall.** The bulk of that gain came from algorithmic fixes in
 Python; the C extension contributed about 4%.
 
 Machine: laptop CPU, CPython 3.12.10, Windows, single-threaded, 8-12 repetitions
 per measurement after one warm-up call.
+
+For the comparison against other chunking libraries - where `smart-slice` wins on
+structure and loses badly on raw throughput - see [BENCHMARK.md](BENCHMARK.md).
 
 ## Where the time actually went
 
@@ -117,6 +121,32 @@ reduce(lambda x, y: [*x, *y], list(map(lambda row: [*row], result)), [])
 
 builds a fresh list at every step. Replaced with a single pass using
 `list.append`.
+
+### 5. Caching the heading level of each pattern (0.5.0)
+
+`parse_title_level` asks `heading_level_of(pattern)` whether a pattern is one of
+the six canonical markdown heading patterns, once per pattern per block. On the
+551 KB corpus that is **8,106 questions per document** with only seven possible
+answers, and each one costs a Python call, a `getattr`, an `isinstance` and a
+`dict.get`.
+
+The pattern list is one object for the whole document
+(`SplitModel.content_level_pattern`), so the answers are memoised against it -
+the same single-entry identity memo already used for `_SCAN_MEMO` and
+`_MASK_MEMO`, plus a `len()` comparison so a caller who appends to the list in
+place cannot read a stale cache.
+
+Measured two ways, because the end-to-end effect is at this machine's noise floor:
+
+| measurement | result |
+|---|---|
+| `parse_title_level` in isolation (level-4 block, 20k calls x 45 interleaved samples) | 4.36 us -> 3.91 us, **-10.3%** |
+| predicted end-to-end (1,934 calls/document x 0.45 us) | ~0.9 ms of ~128 ms, ~0.7% |
+| end-to-end paired A/B (60 interleaved pairs) | +0.5% (median) to +2.1% (min); paired mean +2.26 ms, stdev 14.7 ms - **not significant on its own** |
+
+Output is byte-identical: `tests/test_c_speedup.py`'s equivalence suite and the
+full 415-test run pass unchanged, and the A/B harness asserts the two
+implementations produce equal paragraph lists before timing them.
 
 ### Net effect
 
@@ -253,6 +283,13 @@ predictable placement matters more than peak throughput.
   `result_tree_to_paragraph` and the table-header pass together account for well
   under a second of the profiled total. Optimising them would add a large C surface
   for a small gain.
+- **A single-pass heading scanner replacing the per-level regex cascade.** This is
+  the remaining order-of-magnitude gap against `langchain`'s character splitter
+  (`re.Pattern.findall` is 62 ms of the 124 ms; see [BENCHMARK.md](BENCHMARK.md)).
+  It would mean deriving the tree from one linear scan instead of six filtered
+  regex passes - i.e. reimplementing the lookbehind/lookahead semantics of the six
+  canonical patterns by hand, in the one function the fidelity guarantees depend
+  on. Not worth the semantic risk for an ingest-time cost.
 
 ## Reproducing
 
@@ -262,6 +299,10 @@ python scripts/benchmark.py            # timing table + profile
 python scripts/benchmark.py --profile  # cProfile breakdown of the hot path
 python scripts/benchmark.py --ab       # C vs pure-Python accelerator comparison
 python scripts/benchmark.py --batch --documents 48   # scheduler: serial vs threads vs processes
+
+# other libraries, same corpus (optional peers)
+pip install chonkie langchain-text-splitters tiktoken
+python scripts/benchmark_peers.py --reps 5 --json docs/benchmark_peers.json
 ```
 
 `scripts/benchmark.py` builds the corpus described above from a fixed seed, so the

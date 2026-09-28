@@ -108,6 +108,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
     info = sub.add_parser("formats", help="list supported extensions and missing optional deps")
     info.add_argument("--json", action="store_true", help="machine readable output")
+
+    media = sub.add_parser(
+        "media",
+        help="pull the pictures out of a document and show which paragraph each belongs to",
+    )
+    media.add_argument("path", help="document to inspect")
+    media.add_argument("--limit", type=int, default=DEFAULT_LIMIT,
+                       help=f"max chars per paragraph (default {DEFAULT_LIMIT})")
+    media.add_argument("--out-dir", help="also write the recovered image bytes into this directory")
+    media.add_argument("--probe", choices=("auto", "always", "never"), default="auto",
+                       help="when to read the container directly instead of trusting the handlers")
+    media.add_argument("--include-vector", action="store_true", help="also report SVG / EMF / WMF")
+    media.add_argument("--min-side", type=int, default=None,
+                       help="drop images whose short side is below this many pixels")
+    media.add_argument("--no-external", action="store_true",
+                       help="do not record remote <img src> URLs (they are never downloaded anyway)")
+    media.add_argument("--json", action="store_true", help="machine readable output")
     return parser
 
 
@@ -179,6 +196,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "batch":
         return _run_batch(args)
 
+    if args.command == "media":
+        return _run_media(args)
+
     if args.command == "detect":
         with open(args.path, "rb") as handle:
             content = handle.read()
@@ -247,6 +267,81 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"smart-slice: {len(rows)} paragraphs, {characters} characters, "
             f"limit={args.limit}, overlap={overlap}\n"
         )
+    return 0
+
+
+def _run_media(args) -> int:
+    """Execute the ``media`` subcommand: slice + recover pictures + join them."""
+    from .multimodal import slice_multimodal
+
+    try:
+        with open(args.path, "rb") as handle:
+            content = handle.read()
+    except OSError as error:
+        sys.stderr.write(f"smart-slice: cannot read {args.path}: {error}\n")
+        return 1
+
+    try:
+        result = slice_multimodal(
+            content,
+            os.path.basename(args.path),
+            limit=args.limit,
+            probe={"auto": "auto", "always": True, "never": False}[args.probe],
+            include_vector=args.include_vector,
+            include_external=not args.no_external,
+            min_side=args.min_side,
+        )
+    except SliceError as error:
+        sys.stderr.write(f"smart-slice: {error.message} (code {error.code})\n")
+        return 1
+
+    written: List[str] = []
+    if args.out_dir:
+        os.makedirs(args.out_dir, exist_ok=True)
+        for index, image in enumerate(result.images):
+            if not image.content:
+                continue            # a recorded remote URL has nothing to write
+            stem = "".join(c if c.isalnum() or c in "-_." else "_" for c in (image.file_name or "image"))[:80]
+            label = f"{index:03d}-{stem}"
+            if not label.lower().endswith(image.suffix):
+                label += image.suffix
+            target = os.path.join(args.out_dir, label)
+            with open(target, "wb") as handle:
+                handle.write(image.content)
+            written.append(target)
+
+    if args.json:
+        payload = {
+            "stats": result.stats(),
+            "written": written,
+            "paragraphs": result.records(),
+            "unattached": [image.to_dict() for image in result.unattached],
+        }
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        return 0
+
+    info = result.stats()
+    sys.stdout.write(f"{args.path}: {result.summary()}\n")
+    if info["extraction"]:
+        sys.stdout.write(f"  probe: {info['extraction']}\n")
+    for group in result.groups:
+        if not group.images:
+            continue
+        sys.stdout.write(f"  paragraph {group.index} [{group.title[:60]}]\n")
+        for image in group.images:
+            dims = f"{image.width}x{image.height}" if image.dimensions else "?"
+            sys.stdout.write(
+                f"    - {image.mime_type} {dims} {image.size} bytes "
+                f"({image.meta.get('match')}, {image.meta.get('source') or 'handler'})\n"
+            )
+    if result.unattached:
+        sys.stdout.write(f"  unattached ({len(result.unattached)})\n")
+        for image in result.unattached:
+            dims = f"{image.width}x{image.height}" if image.dimensions else "?"
+            where = image.meta.get("member") or image.meta.get("src") or image.file_name
+            sys.stdout.write(f"    - {image.mime_type} {dims} {where}\n")
+    if written:
+        sys.stdout.write(f"  wrote {len(written)} files to {args.out_dir}\n")
     return 0
 
 

@@ -8,6 +8,10 @@
 
 The corpus is generated from a fixed seed, so runs are comparable across machines
 in relative terms (absolute times obviously depend on the CPU).
+
+For the comparison against *other* chunking libraries (chonkie,
+langchain-text-splitters) on this same corpus, see scripts/benchmark_peers.py and
+docs/BENCHMARK.md.
 """
 from __future__ import annotations
 

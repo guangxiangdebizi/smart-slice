@@ -1,10 +1,10 @@
 # smart-slice
 
-**Fidelity-first document slicing for RAG pipelines.** Feed it 197 file extensions across 30 handlers, get back retrieval-ready paragraphs that keep every original character reachable.
+**Fidelity-first document slicing for RAG pipelines.** Feed it 197 file extensions across 30 handlers, get back retrieval-ready paragraphs that keep every original character reachable - plus the document's pictures, joined to the paragraphs they belong to.
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-332%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-415%20passed-brightgreen.svg)]()
 [![PyPI version](https://img.shields.io/pypi/v/smart-slice.svg)](https://pypi.org/project/smart-slice/)
 
 ```python
@@ -18,7 +18,7 @@ paragraphs = slice_text("# Chapter\n\nbody text", limit=1000)
 
 ## Why another splitter?
 
-Most text splitters treat a document as a bag of characters and chop it on a fixed grid. That loses the two things retrieval actually depends on: **where a passage sits in the document's structure**, and **the passage's exact original wording**. `smart-slice` is built around three rules.
+Most text splitters treat a document as a bag of characters and chop it on a fixed grid. That loses the two things retrieval actually depends on: **where a passage sits in the document's structure**, and **the passage's exact original wording**. `smart-slice` is built around five rules.
 
 ### 1. Fidelity before cleverness
 
@@ -39,17 +39,31 @@ No cleaning step deletes source text.
 
 Each paragraph carries a `title` field holding its **heading chain** (`"Part I  Chapter 3"`), so downstream chunks keep their section context.
 
-### 3. Measurably fast
+### 3. Measurably fast - and honestly measured
 
-Slicing a 550 KB structured document takes ~140 ms (≈3.9 MB/s) on a laptop CPU.
+Slicing a 550 KB structured document takes ~125 ms (≈4.4 MB/s) on a laptop CPU.
 The hot path is a single linear scan that decides which heading levels a block can
 possibly contain, so provably-empty regex passes are skipped; an optional C
 extension (`pip install smart-slice[accel]`) runs that scan natively. Numbers and
 the reasoning are in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
+That is *not* the fastest splitter in this space: a plain character splitter runs
+~36x faster. What the extra time buys - and when it is worth paying - is measured
+against `chonkie` and `langchain-text-splitters` on the same corpus in
+[`docs/BENCHMARK.md`](docs/BENCHMARK.md). Short version: `smart-slice` is the only
+row that keeps every natural unit intact, carries its heading chain, never cuts a
+code fence and never orphans a table row from its header.
+
 ### 4. No framework
 
-A pure library: no Django, no ORM, no network calls, no logging configuration (it emits records on the `smart_slice` logger and leaves routing to you). Errors are `SliceError` with an HTTP-style `.code` (`400` = input problem, `500` = parse failure). Images pulled out of a document are handed to a `save_image` **callback** — the library never persists anything.
+A pure library: no Django, no ORM, no network calls, no logging configuration (it emits records on the `smart_slice` logger and leaves routing to you). Errors are `SliceError` with an HTTP-style `.code` (`400` = input problem, `500` = parse failure). Images pulled out of a document are handed to a `save_image` **callback** — the library never persists anything, and a remote `<img src="https://...">` is recorded, never fetched.
+
+### 5. Pictures are part of the document
+
+A vision-language embedding model wants the figure next to the paragraph that
+discusses it, not a text-only index of a document that was half diagrams.
+`slice_multimodal` returns both, already joined — see
+[Multimodal slicing](#multimodal-slicing-pictures--paragraphs).
 
 ---
 
@@ -178,6 +192,8 @@ Every entry point returns a list of `{"title": str, "content": str}`:
 
 Archives are unpacked recursively; each inner file goes through the same dispatch. The text handler is the fallback for any decodable content whose extension is not otherwise claimed.
 
+**Pictures** come out of every one of these containers - `docx`/`pptx`/`pdf`/`xlsx`/`zip` through their handlers, and `html`/`epub`/`eml`/`mhtml`/`odf`/`fb2`/standalone image files through the multimodal probe. See [Multimodal slicing](#multimodal-slicing-pictures--paragraphs).
+
 ### Not supported (rejected with `400`)
 
 These are deliberately rejected rather than force-decoded into garbage:
@@ -200,6 +216,138 @@ and scanned images.
 
 ---
 
+## Multimodal slicing (pictures + paragraphs)
+
+Text-only indexing throws away the figures, charts and screenshots in a document -
+exactly the content a vision-language embedding model can use. `slice_multimodal`
+returns the paragraphs *and* the pictures, already joined:
+
+```python
+from smart_slice import slice_multimodal
+
+result = slice_multimodal(path="deck.pptx", limit=1000)
+
+result.summary()          # '14 paragraphs, 6 images (6 attached, 0 unattached, 0.42 MB)'
+result.coverage           # 1.0 - every image landed on a paragraph
+
+for row in result.paired():            # only paragraphs that carry a picture
+    print(row["title"], len(row["content"]), row["images"][0]["mime_type"])
+    send_to_vl_model(row["title"], row["content"],
+                     [i["data_uri"] for i in row["images"]])
+```
+
+Each entry of `result.records()` / `result.paired()` is plain JSON:
+
+```python
+{
+  "index": 3,
+  "title": "Q3 Results  Revenue by region",
+  "content": "Revenue grew ... ![chart](./oss/file/0198f...)",
+  "images": [{
+      "id": "0198f...", "file_name": "chart1.png", "mime_type": "image/png",
+      "bytes": 41233, "sha256": "9d1e...", "width": 940, "height": 512,
+      "source": "zip", "member": "ppt/media/image3.png", "match": "reference",
+      "data_uri": "data:image/png;base64,iVBORw0..."     # with with_data=True
+  }]
+}
+```
+
+### Where the pictures come from
+
+Two independent channels, deduplicated against each other by content hash:
+
+1. **the handlers** - `docx`, `pptx`, `pdf`, `xlsx` and `zip` already emit
+   `ImageAsset` objects through `save_image`. `slice_multimodal` installs an
+   `ImageCollector` as that callback, so they are captured instead of dropped.
+2. **the probe** - when the handlers produced nothing for this document,
+   `scan_media` opens the container itself. This is what recovers the formats that
+   only ever yielded text:
+
+| container | what the probe reads |
+|-----------|----------------------|
+| `zip` (OOXML / ODF / EPUB / any archive) | `word/media/*`, `ppt/media/*`, `xl/media/*`, `Pictures/*`, and every other image member; then text members for `<img src>` and `![]()` references, resolved relative to the member they were found in |
+| `pdf` | `page.images`, tagged with the page number (needs the `pdf` extra) |
+| `mime` (`.eml` `.mhtml`) | image parts, indexed by `Content-ID` / `Content-Location` so `cid:` references in the body resolve |
+| `markup` (`.html` `.md` ...) | `data:` URIs decoded; remote URLs **recorded, never fetched** |
+| standalone picture | the file itself, pinned to its one paragraph |
+
+`probe="auto"` (the default) means "only when the handlers came up empty", so a
+`.docx` is not read twice. `probe=True` always probes, `probe=False` never does.
+
+### How a picture is joined to a paragraph
+
+Four passes, strongest signal first; each placed image records how it matched in
+`meta["match"]`, and anything left over lands in `result.unattached` rather than
+being dropped:
+
+| pass | signal | reliability |
+|------|--------|-------------|
+| `reference` | the `./oss/file/{id}` the handler wrote into the paragraph text | exact |
+| `heading` | the heading the picture sat under in the source markup | strong |
+| `anchor` | the ~96 characters of visible text that preceded the tag | heuristic |
+| `document` | a standalone picture file *is* the document | exact by definition |
+
+**The sliced text is never modified** - attachment is a join, not a rewrite, and
+the test suite asserts `result.paragraphs == slice_bytes(...)` for every container.
+
+### Using the collector on its own
+
+```python
+from smart_slice import slice_bytes, ImageCollector
+
+collector = ImageCollector()                       # dedupes by sha256
+rows = slice_bytes(data, "report.docx", save_image=collector)
+collector.assets                                   # [ImageAsset, ...]
+collector.duplicates                               # how many repeats it folded away
+```
+
+`ImageCollector` returns the `{new_id: kept_id}` map the `save_image` contract
+expects, so duplicate pictures collapse onto one id *and* every
+`./oss/file/{id}` reference in the paragraphs is rewritten to match.
+
+`ImageAsset` grew computed views (the constructor is unchanged): `.content`,
+`.size`, `.sha256`, `.mime_type`, `.suffix`, `.dimensions`, `.width`, `.height`,
+`.data_uri()`, `.to_dict(with_data=...)`. MIME type and pixel size come from the
+magic bytes and the file header - no Pillow required.
+
+### Tuning
+
+```python
+slice_multimodal(
+    data, "page.html",
+    min_side=20,            # drop bullets, icons and tracking pixels
+    include_vector=True,    # also return SVG / EMF / WMF (off: a VL model cannot eat them)
+    include_external=False, # do not record remote <img src> URLs
+    max_images=512,         # per-document ceiling
+    max_image_bytes=64 << 20,
+    keep_content=False,     # metadata only - frees the bytes after slicing
+)
+```
+
+### A whole corpus at once
+
+```python
+from smart_slice import slice_many
+
+report = slice_many(paths, backend="thread", concurrency=4, collect_images=True)
+report.paragraphs        # unchanged: every document's paragraphs, in input order
+report.images            # every picture in the batch, deduplicated across documents
+```
+
+`collect_images=True` needs a thread or serial backend - the collector holds a
+lock, and a lock is not picklable - so `backend="process"` raises instead of
+silently returning an empty list.
+
+### On the command line
+
+```bash
+smart-slice media deck.pptx                  # what is in there, and where it belongs
+smart-slice media page.html --json           # machine readable
+smart-slice media book.epub --out-dir imgs/  # also write the picture bytes to disk
+smart-slice media scan.pdf --min-side 20 --probe always
+```
+
+---
 ## Command line
 
 ```bash
@@ -210,6 +358,7 @@ smart-slice chunk notes.md --chunk-size 256 --chunk-overlap 40 --carry-title
 smart-slice detect mystery.bin
 smart-slice formats            # list handlers + missing optional deps
 smart-slice batch docs/*.pdf -j 4 --backend process --stats   # a whole corpus
+smart-slice media deck.pptx --out-dir imgs/       # pictures out, and where they belong
 smart-slice cores              # detected cores, derived width, affinity mask
 python -m smart_slice slice notes.md --format md   # module form
 ```
@@ -217,6 +366,7 @@ python -m smart_slice slice notes.md --format md   # module form
 - `slice` — `--format {json,jsonl,text,md}`, `--limit`, `--overlap`, `--overlap-ratio`, `--overlap-section-only`, `--no-filter`, `--title-prefix`, `-o/--output`, `--stats` (summary to stderr).
 - `chunk` — slices first, then cuts paragraphs to an embedding window: `--chunk-size`, `--chunk-overlap`, `--carry-title`, `-o/--output`, `--stats`. Emits one JSON object per chunk.
 - `batch` — slices many documents under one scheduling policy: `-j/--concurrency {N,auto,cores,serial,2x}`, `--backend {thread,process,serial}`, `--pin-cores`, `--max-concurrency`, `--error-policy {raise_first,collect}`, `--unordered`, `--timeout`, plus the `slice` options; `--format {json,jsonl,text,summary}`, `-o/--output`, `--stats`. Exit 1 names every failed document, exit 2 is a usage error.
+- `media` — slices the document and reports every picture in it, joined to the paragraph it belongs to: `--limit`, `--probe {auto,always,never}`, `--include-vector`, `--min-side`, `--no-external`, `--out-dir` (write the image bytes to disk), `--json`.
 - `cores` — the scheduling facts for this machine: usable cores, derived width, affinity mask, pinning support, and which environment variables are set (`--json` for machines).
 - `detect` — prints the handler class that would claim the file (exit 2 if none).
 - `formats` — supported extensions and which extras are not installed (`--json` for machines).
@@ -489,17 +639,24 @@ Or override per call by passing a `ParserLimits` instance to the validators, or 
 | `missing_dependencies()` | optional extras not installed |
 | `chunk_paragraphs(paragraphs, *, chunk_size)` | second-stage embedding chunking |
 | `chunk(text, *, chunk_size)` | convenience wrapper |
-| `slice_many(inputs, *, concurrency, backend, pin_cores, ...)` | slice a corpus in one call -> `BatchReport` |
+| `slice_many(inputs, *, concurrency, backend, pin_cores, collect_images, ...)` | slice a corpus in one call -> `BatchReport` |
 | `slice_paths(paths, ...)` | `slice_many` over filesystem paths |
+| `slice_multimodal(content=None, name=None, *, path, limit, probe, ...)` | paragraphs **and** pictures, already joined -> `MultimodalResult` |
+| `slice_path_multimodal(path, ...)` | `slice_multimodal` for a file on disk |
+| `extract_media(content, name, ...)` / `scan_media(...)` | pull the images out of a container, no slicing |
+| `attach_images(paragraphs, assets)` | join images to paragraphs |
+| `ImageCollector` | a `save_image` sink that dedupes and returns the id-remap contract |
+| `MultimodalResult` / `MultimodalParagraph` / `MediaExtraction` | multimodal result types |
+| `container_kind(content, name)` | which reader the probe would use |
 | `run_parallel(items, worker, policy)` | the ordered, error-isolating parallel map |
 | `SchedulerPolicy` / `SliceJob` / `BatchReport` / `TaskOutcome` | scheduling configuration and results |
 | `available_cores()` / `auto_concurrency()` / `resolve_concurrency()` | core discovery and width derivation |
 | `use_policy(policy)` | publish a policy for a block (contextvar-scoped) |
 | `split_document(...)` | the low-level orchestration entry point |
 
-Building blocks: `SplitModel`, `smart_split_paragraph`, `filter_special_char`, `MarkChunkHandle`, `ParserLimits`, `ImageAsset`, `SPLIT_HANDLERS`, `MARKDOWN_HEADINGS`, `DEFAULT_PATTERNS`, `BLANK_LINE`, `LITERAL_PATTERNS`.
+Building blocks: `SplitModel`, `smart_split_paragraph`, `filter_special_char`, `MarkChunkHandle`, `ParserLimits`, `ImageAsset` (with `.mime_type`, `.sha256`, `.dimensions`, `.data_uri()`, `.to_dict()`), `SPLIT_HANDLERS`, `MARKDOWN_HEADINGS`, `DEFAULT_PATTERNS`, `BLANK_LINE`, `LITERAL_PATTERNS`.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how slicing works internally and [`docs/PORTING.md`](docs/PORTING.md) for how this was extracted from the source platform.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how slicing works internally, [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the comparison against other chunkers, and [`docs/PORTING.md`](docs/PORTING.md) for how this was extracted from the source platform.
 
 ---
 
@@ -509,8 +666,12 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how slicing works interna
 git clone https://github.com/guangxiangdebizi/smart-slice.git
 cd smart-slice
 pip install -e ".[dev]"
-pytest
+pytest                                   # 415 tests, all offline
 ruff check smart_slice tests
+
+python scripts/benchmark.py              # reproduce docs/PERFORMANCE.md
+pip install chonkie langchain-text-splitters tiktoken
+python scripts/benchmark_peers.py        # reproduce docs/BENCHMARK.md
 ```
 
 ---

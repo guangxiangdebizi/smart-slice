@@ -8,13 +8,19 @@ How `smart-slice` turns a document into retrieval-ready paragraphs.
 public API  (smart_slice/__init__.py)
    slice_text / slice_bytes / slice_path / extract_text / chunk_paragraphs / detect_handler
    slice_many / slice_paths            <- batch entry points
-        |                                    |
-        |                                    v
+   slice_multimodal / slice_path_multimodal    <- multimodal entry points
+        |                                    |                     |
+        |                                    v                     |
         |                        scheduler  (smart_slice/scheduler.py)
         |                           width derivation, core allocation, ordered
         |                           parallel map, error policy, BatchReport
         |                                    |  (calls back into the public API
         |                                    |   once per document, in a worker)
+        |                                    |
+        |        multimodal  (smart_slice/multimodal.py + _images.py)
+        |           ImageCollector sink, container probing (zip / pdf / MIME /
+        |           markup / standalone picture), attachment to paragraphs
+        |                                    |
         v                                    v
 service  (smart_slice/service.py)
    split_document(): bytes -> file adapter -> handler dispatch -> image rewrite/OCR -> normalise
@@ -47,6 +53,11 @@ Each layer has one job:
   embedded images) out of one family of formats; it delegates the actual cutting
   to the chunker.
 - **chunker** — the slicing algorithm, format-agnostic. It only ever sees a string.
+- **multimodal** — the picture layer, and the only one that reads a container a
+  second time. It sits *beside* the public API rather than inside it: it installs a
+  sink, and when the handlers produced no image it opens the bytes itself. Slicing
+  never changes because of it — the test suite asserts the paragraphs are identical
+  to `slice_bytes`' for every container it handles.
 
 ## Batch scheduling
 
@@ -251,6 +262,70 @@ Handlers never persist anything. When a document embeds images:
    (`inject_image_ocr_text`).
 
 This keeps storage, dedup and OCR policy entirely in the caller's hands.
+
+## Multimodal layer
+
+The pipeline above is *opt-in on the caller's side*: without a `save_image`
+callback the pictures are simply dropped, and three families of formats never
+produced any at all. `smart_slice/multimodal.py` closes both gaps without
+touching a single generated handler (see [PORTING.md](PORTING.md) for why those
+are frozen).
+
+```
+slice_multimodal(content, name)
+  |
+  +-- ImageCollector  ......... installed as save_image; thread-safe; dedupes by
+  |                             sha256 and returns the {new_id: kept_id} map the
+  |                             service layer already knows how to apply
+  |
+  +-- slice_bytes  ............ unchanged; paragraphs come back byte-identical
+  |
+  +-- probe (default "auto")
+  |     only when the handlers produced no image for this document:
+  |     scan_media(content, name) opens the container itself
+  |       zip    -> OOXML / ODF / EPUB media members, then text members for
+  |                 <img src> and ![]() references (relative srcs are resolved
+  |                 against the member they were found in)
+  |       pdf    -> pypdf page.images, tagged with the page number
+  |       mime   -> image parts, indexed by Content-ID and Content-Location so
+  |                 cid: references in the HTML body resolve
+  |       markup -> data: URIs decoded, remote URLs recorded but never fetched
+  |       image  -> the file itself becomes the asset (role="document")
+  |
+  +-- attach_images(paragraphs, assets)
+        1. reference  ./oss/file/{id} in the paragraph text (exact)
+        2. heading    the heading the picture sat under in the source markup
+        3. anchor     the ~96 characters of visible text that preceded the tag
+        4. document   a standalone picture file belongs to its one paragraph
+        whatever is left lands in .unattached, never dropped
+  |
+  +-- MultimodalResult  .paragraphs .images .groups .unattached
+                        .records() / .paired() / .stats() / .coverage
+```
+
+Design rules it follows:
+
+* **No new dependencies.** `_images.py` sniffs MIME types from magic bytes and
+  reads pixel dimensions out of PNG/GIF/BMP/ICO/JPEG/WEBP/TIFF/HEIF/SVG headers
+  directly, falling back to Pillow only when it happens to be installed. `pypdf`
+  stays optional and its absence is recorded in `MediaExtraction.errors`.
+* **No network I/O.** An `<img src="https://...">` becomes an asset with zero
+  bytes and `meta["src"]` set. Fetching is the caller's decision.
+* **Text is never modified.** Attachment is a join, not a rewrite; the fidelity
+  tests compare `result.paragraphs` against `slice_bytes` output for every
+  container.
+* **Per-document ownership.** A batch shares one collector across worker threads,
+  so the sink closure records what *its* document contributed (`collect()`
+  returns the surviving assets alongside the dedup map). Reading the shared list
+  before and after the parse would attribute another thread's pictures to this
+  document.
+* **Vector formats are opt-in.** SVG/EMF/WMF are images to a document but not to
+  a VL embedding model, so `include_vector` defaults to False.
+
+`slice_many(..., collect_images=True)` routes each job through
+`slice_multimodal` with one shared collector and publishes the batch's pictures
+on `report.images`. It cannot be combined with `backend="process"` — a lock is not
+picklable — and that combination raises instead of silently returning nothing.
 
 ## Defensive parsing guards
 

@@ -3,16 +3,20 @@
 
 Turn a document into retrieval-ready paragraphs: extract the text of ~30 file
 formats, cut it along its own structure (heading tree, then blank lines, then a
-length budget), and keep every original character reachable.
+length budget), and keep every original character reachable.  The pictures come
+out too, joined to the paragraphs they illustrate.
 
 Quick start::
 
-    from smart_slice import slice_bytes, slice_text
+    from smart_slice import slice_bytes, slice_multimodal, slice_text
 
     paragraphs = slice_text("# Chapter\\n\\nbody text", limit=1000)
     # [{'title': 'Chapter', 'content': 'body text'}]
 
     paragraphs = slice_bytes(open("report.pdf", "rb").read(), "report.pdf", limit=1000)
+
+    result = slice_multimodal(path="deck.pptx", limit=1000)
+    result.paired()   # paragraphs that carry a picture, as JSON for a VL model
 
 Design notes
 ------------
@@ -28,7 +32,10 @@ character cut.
 *No framework.*  Pure library: no Django, no ORM, no network, no logging
 configuration.  Errors are :class:`~smart_slice.exceptions.SliceError` with an
 HTTP-style ``code``; images extracted from documents are handed to a callback
-instead of being persisted.
+instead of being persisted, and a remote ``<img src>`` is recorded, never fetched.
+
+*Pictures are content.*  :func:`slice_multimodal` returns the paragraphs and the
+images already joined - see :mod:`smart_slice.multimodal`.
 """
 import os
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Union
@@ -46,6 +53,20 @@ from .handlers import (
     BaseSplitHandle,
     FileBufferHandle,
     missing_dependencies,
+)
+from .multimodal import (
+    DEFAULT_MAX_IMAGE_BYTES,
+    DEFAULT_MAX_IMAGES,
+    ImageCollector,
+    MediaExtraction,
+    MultimodalParagraph,
+    MultimodalResult,
+    attach_images,
+    container_kind,
+    extract_media,
+    scan_media,
+    slice_multimodal,
+    slice_path_multimodal,
 )
 from .options import (
     DEFAULT_LIMIT,
@@ -101,7 +122,7 @@ from .service import (
 )
 from .types import ImageAsset, Paragraph, SplitResult
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "__version__",
@@ -111,11 +132,24 @@ __all__ = [
     "slice_path",
     "slice_many",
     "slice_paths",
+    "slice_multimodal",
+    "slice_path_multimodal",
     "split_document",
     "chunk",
     "chunk_paragraphs",
     # extraction only (no slicing)
     "extract_text",
+    "extract_media",
+    "scan_media",
+    # multimodal (pictures out of the document, joined back to the paragraphs)
+    "ImageCollector",
+    "MediaExtraction",
+    "MultimodalParagraph",
+    "MultimodalResult",
+    "attach_images",
+    "container_kind",
+    "DEFAULT_MAX_IMAGES",
+    "DEFAULT_MAX_IMAGE_BYTES",
     # text-level building blocks
     "SplitModel",
     "smart_split_paragraph",

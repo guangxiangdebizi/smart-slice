@@ -1,10 +1,10 @@
 # smart-slice
 
-**面向 RAG 管线的保真优先文档切片库。** 输入 30 个 handler 覆盖的 197 种文件扩展名，输出检索可用的段落，且原始字符全程可回溯、不丢失。
+**面向 RAG 管线的保真优先文档切片库。** 输入 30 个 handler 覆盖的 197 种文件扩展名，输出检索可用的段落，且原始字符全程可回溯、不丢失；同时输出文档内的图片，并已与所属段落完成对齐。
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-220%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-415%20passed-brightgreen.svg)]()
 [![PyPI version](https://img.shields.io/pypi/v/smart-slice.svg)](https://pypi.org/project/smart-slice/)
 
 ```python
@@ -20,7 +20,7 @@ paragraphs = slice_text("# 章节\n\n正文内容", limit=1000)
 
 ## 设计取向
 
-多数切分器把文档当作字符流，按固定网格切块，由此丢失检索真正依赖的两样东西：**段落在文档结构中的位置**，以及**段落的原始措辞**。smart-slice 围绕三条规则构建。
+多数切分器把文档当作字符流，按固定网格切块，由此丢失检索真正依赖的两样东西：**段落在文档结构中的位置**，以及**段落的原始措辞**。smart-slice 围绕五条规则构建。
 
 ### 一、保真优先于聪明
 
@@ -41,13 +41,19 @@ paragraphs = slice_text("# 章节\n\n正文内容", limit=1000)
 
 每个段落的 `title` 字段保存其**标题链**（如 `"第一部分  第三章"`），使下游分块保留章节语境。
 
-### 三、实测高效
+### 三、实测高效，且如实计量
 
-551 KB 结构化文档切片约 140 ms（≈3.9 MB/s）。热路径为单遍线性扫描判定块内可能存在的标题层级，跳过必然为空的正则扫描；可选 C 扩展（`pip install smart-slice[accel]`）原生执行该扫描。数据与推理见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)。
+551 KB 结构化文档切片约 125 ms（≈4.4 MB/s）。热路径为单遍线性扫描判定块内可能存在的标题层级，跳过必然为空的正则扫描；可选 C 扩展（`pip install smart-slice[accel]`）原生执行该扫描。数据与推理见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)。
+
+该速度并非同类最快：纯字符切分器快约 36 倍。多出的时间换来了什么、何种场景值得付出，已在同一语料上与 `chonkie`、`langchain-text-splitters` 横向实测，见 [`docs/BENCHMARK.md`](docs/BENCHMARK.md)。结论摘要：smart-slice 是榜单中唯一在全部结构指标上取满分的实现——自然段落单元零破坏、标题链随行、代码围栏零切断、表格数据行与表头零分离。
 
 ### 四、无框架依赖
 
-纯库实现：无 Django、无 ORM、无网络请求、不配置日志（仅通过 `smart_slice` logger 发出记录，路由交由宿主决定）。错误为 `SliceError`，带 HTTP 风格的 `.code`（`400` 输入问题、`500` 解析失败）。从文档抽出的图片经 `save_image` **回调**交付，库本身不做任何持久化。
+纯库实现：无 Django、无 ORM、无网络请求、不配置日志（仅通过 `smart_slice` logger 发出记录，路由交由宿主决定）。错误为 `SliceError`，带 HTTP 风格的 `.code`（`400` 输入问题、`500` 解析失败）。从文档抽出的图片经 `save_image` **回调**交付，库本身不做任何持久化；外链 `<img src="https://...">` 只登记地址，不发起下载。
+
+### 五、图片同属文档内容
+
+面向视觉语言（VL）embedding 模型时，图表、示意图与截图正是可用信息，纯文本索引会把它们整体丢弃。`slice_multimodal` 同时返回段落与图片，且已完成对齐——见[多模态切片](#多模态切片图片--段落)。
 
 ---
 
@@ -164,6 +170,8 @@ rows = slice_bytes(raw_bytes, "deck.pptx", limit=1000, save_image=save_image)
 | 文本/源码 | `TextSplitHandle` | `.txt` `.md` `.markdown` `.log` `.json` `.jsonl` `.yaml` `.toml` `.ini` `.rst` `.tex` `.sql` 及 60+ 源码/配置扩展名（`.py` `.js` `.ts` `.java` `.go` `.c` `.cpp` `.rs` `.rb` `.php` `.cs` `.swift` `.kt` `.scala` `.lua` `.r` `.sh` `.ps1` `.css` `.xml` `.proto` `.graphql` `.adoc` `.org` `.diff` `.patch` `.po` `.properties` `.env` …） | charset-normalizer |
 
 
+**图片**可从上述所有容器中取出：`docx`/`pptx`/`pdf`/`xlsx`/`zip` 经各自 handler 产出，`html`/`epub`/`eml`/`mhtml`/`odf`/`fb2`/独立图片文件经多模态探测补齐。详见[多模态切片](#多模态切片图片--段落)。
+
 ### 明确不支持（抛 `400`）
 
 以下类型是刻意拒绝、而非硬解码成乱码：
@@ -184,6 +192,132 @@ rows = slice_bytes(raw_bytes, "deck.pptx", limit=1000, save_image=save_image)
 
 ---
 
+## 多模态切片（图片 + 段落）
+
+纯文本索引会丢掉文档中的图表、示意图与截图，而这些正是视觉语言（VL）embedding
+模型可用的信息。`slice_multimodal` 同时返回段落与图片，且已完成对齐：
+
+```python
+from smart_slice import slice_multimodal
+
+result = slice_multimodal(path="deck.pptx", limit=1000)
+
+result.summary()          # '14 paragraphs, 6 images (6 attached, 0 unattached, 0.42 MB)'
+result.coverage           # 1.0 —— 每张图片都落到了某个段落上
+
+for row in result.paired():            # 仅返回带图片的段落
+    print(row["title"], len(row["content"]), row["images"][0]["mime_type"])
+    send_to_vl_model(row["title"], row["content"],
+                     [i["data_uri"] for i in row["images"]])
+```
+
+`result.records()` / `result.paired()` 的每一项都是可直接序列化的结构：
+
+```python
+{
+  "index": 3,
+  "title": "Q3 Results  Revenue by region",
+  "content": "Revenue grew ... ![chart](./oss/file/0198f...)",
+  "images": [{
+      "id": "0198f...", "file_name": "chart1.png", "mime_type": "image/png",
+      "bytes": 41233, "sha256": "9d1e...", "width": 940, "height": 512,
+      "source": "zip", "member": "ppt/media/image3.png", "match": "reference",
+      "data_uri": "data:image/png;base64,iVBORw0..."     # with_data=True 时提供
+  }]
+}
+```
+
+### 图片的两条来源通道
+
+两条通道互相独立，并按内容哈希互相去重：
+
+1. **handler 通道**——`docx`、`pptx`、`pdf`、`xlsx`、`zip` 本就会经 `save_image`
+   产出 `ImageAsset`。`slice_multimodal` 把 `ImageCollector` 装成该回调，图片由此
+   被收集而非丢弃。
+2. **探测通道**——当某文档的 handler 未产出任何图片时，`scan_media` 直接打开容器
+   读取。此前只出文本的格式由此补齐：
+
+| 容器 | 探测读取的内容 |
+|------|----------------|
+| `zip`（OOXML / ODF / EPUB / 任意压缩包） | `word/media/*`、`ppt/media/*`、`xl/media/*`、`Pictures/*` 及其他图片成员；随后扫描文本成员中的 `<img src>` 与 `![]()` 引用，并按引用所在成员解析相对路径 |
+| `pdf` | `page.images`，并标注页码（需 `pdf` extra） |
+| `mime`（`.eml` `.mhtml`） | 图片部件，按 `Content-ID` / `Content-Location` 建索引，正文中的 `cid:` 引用可解析 |
+| `markup`（`.html` `.md` 等） | 解码 `data:` URI；外链 URL 只登记、**不下载** |
+| 独立图片文件 | 文件本身即资产，固定归属其唯一段落 |
+
+`probe="auto"`（默认）表示"仅当 handler 未产出图片时才探测"，因此 `.docx` 不会被
+读两遍；`probe=True` 恒探测，`probe=False` 恒不探测。
+
+### 图片与段落的对齐方式
+
+四道匹配，信号由强到弱；每张已落位的图片在 `meta["match"]` 中记录命中方式，未落位
+的一律进入 `result.unattached`，不做静默丢弃：
+
+| 匹配道 | 依据 | 可靠性 |
+|--------|------|--------|
+| `reference` | handler 写入段落文本的 `./oss/file/{id}` | 精确 |
+| `heading` | 图片在源标记中所处的标题 | 强 |
+| `anchor` | 标签之前约 96 个字符的可见文本 | 启发式 |
+| `document` | 独立图片文件本身即该文档 | 定义上精确 |
+
+**切片文本永不被修改**——对齐是一次连接（join），不是改写；测试套件对每种容器都断言
+`result.paragraphs == slice_bytes(...)`。
+
+### 单独使用收集器
+
+```python
+from smart_slice import slice_bytes, ImageCollector
+
+collector = ImageCollector()                       # 按 sha256 去重
+rows = slice_bytes(data, "report.docx", save_image=collector)
+collector.assets                                   # [ImageAsset, ...]
+collector.duplicates                               # 被折叠掉的重复张数
+```
+
+`ImageCollector` 返回 `save_image` 契约要求的 `{新id: 保留id}` 映射，因此重复图片
+收敛到同一 id，段落中所有 `./oss/file/{id}` 引用同步重写。
+
+`ImageAsset` 新增计算属性（构造函数签名未变）：`.content`、`.size`、`.sha256`、
+`.mime_type`、`.suffix`、`.dimensions`、`.width`、`.height`、`.data_uri()`、
+`.to_dict(with_data=...)`。MIME 类型与像素尺寸取自魔术字节与文件头，无需 Pillow。
+
+### 参数调节
+
+```python
+slice_multimodal(
+    data, "page.html",
+    min_side=20,            # 过滤项目符号、图标与追踪像素
+    include_vector=True,    # 同时返回 SVG / EMF / WMF（默认关：VL 模型无法直接消费）
+    include_external=False, # 不登记外链 <img src>
+    max_images=512,         # 单文档图片上限
+    max_image_bytes=64 << 20,
+    keep_content=False,     # 仅保留元数据，切分后释放字节
+)
+```
+
+### 整批语料
+
+```python
+from smart_slice import slice_many
+
+report = slice_many(paths, backend="thread", concurrency=4, collect_images=True)
+report.paragraphs        # 语义不变：按输入顺序汇总各文档段落
+report.images            # 整批图片，跨文档去重
+```
+
+`collect_images=True` 需要 thread 或 serial 后端——收集器持有锁，锁不可 pickle，
+因此与 `backend="process"` 同用会直接抛错，而不是静默返回空列表。
+
+### 命令行
+
+```bash
+smart-slice media deck.pptx                  # 有哪些图、各归属哪个段落
+smart-slice media page.html --json           # 机器可读
+smart-slice media book.epub --out-dir imgs/  # 同时把图片字节写盘
+smart-slice media scan.pdf --min-side 20 --probe always
+```
+
+---
 ## 命令行
 
 ```bash
@@ -192,12 +326,14 @@ smart-slice slice notes.md --format text --title-prefix --stats
 smart-slice detect mystery.bin
 smart-slice formats                       # 列出 handler 与缺失的可选依赖
 smart-slice batch docs/*.pdf -j 4 --backend process --stats   # 整个语料库
+smart-slice media deck.pptx --out-dir imgs/    # 取出图片，并给出所属段落
 smart-slice cores                         # 本机核数、推导宽度、亲和性掩码
 python -m smart_slice slice notes.md --format md
 ```
 
 - `slice`：`--format {json,jsonl,text,md}`、`--limit`、`--no-filter`、`--title-prefix`、`-o/--output`、`--stats`（摘要写 stderr）。
 - `batch`：在一套调度策略下切分多个文档：`-j/--concurrency {N,auto,cores,serial,2x}`、`--backend {thread,process,serial}`、`--pin-cores`、`--max-concurrency`、`--error-policy {raise_first,collect}`、`--unordered`、`--timeout`，以及 `slice` 的各项选项；`--format {json,jsonl,text,summary}`、`-o/--output`、`--stats`。退出码 1 会逐个点名失败文档，2 为用法错误。
+- `media`：切分文档并列出其中每张图片及其所属段落：`--limit`、`--probe {auto,always,never}`、`--include-vector`、`--min-side`、`--no-external`、`--out-dir`（把图片字节写盘）、`--json`。
 - `cores`：输出本机调度事实——可用核数、推导宽度、亲和性掩码、是否支持绑核，以及相关环境变量的当前取值（`--json` 供机器读取）。
 - `detect`：输出将命中该文件的 handler 类名（无命中退出码 2）。
 - `formats`：支持的扩展名与未安装的 extras（`--json` 供机器读取）。
@@ -421,17 +557,24 @@ except SliceError as e:
 | `missing_dependencies()` | 未安装的可选 extras |
 | `chunk_paragraphs(paragraphs, *, chunk_size)` | 面向 embedding 的二次分块 |
 | `chunk(text, *, chunk_size)` | 便捷封装 |
-| `slice_many(inputs, *, concurrency, backend, pin_cores, ...)` | 一次调用切分整个批次，返回 `BatchReport` |
+| `slice_many(inputs, *, concurrency, backend, pin_cores, collect_images, ...)` | 一次调用切分整个批次，返回 `BatchReport` |
 | `slice_paths(paths, ...)` | 面向路径列表的 `slice_many` |
+| `slice_multimodal(content=None, name=None, *, path, limit, probe, ...)` | 段落 + 图片，已对齐，返回 `MultimodalResult` |
+| `slice_path_multimodal(path, ...)` | 面向磁盘文件的 `slice_multimodal` |
+| `extract_media(content, name, ...)` / `scan_media(...)` | 仅从容器取图，不切分 |
+| `attach_images(paragraphs, assets)` | 把图片对齐到段落 |
+| `ImageCollector` | 带去重的 `save_image` 收集器，遵守 id 重映射契约 |
+| `MultimodalResult` / `MultimodalParagraph` / `MediaExtraction` | 多模态结果对象 |
+| `container_kind(content, name)` | 探测将启用哪个容器读取器 |
 | `run_parallel(items, worker, policy)` | 保序 + 错误隔离的通用并行映射 |
 | `SchedulerPolicy` / `SliceJob` / `BatchReport` / `TaskOutcome` | 调度配置与结果对象 |
 | `available_cores()` / `auto_concurrency()` / `resolve_concurrency()` | 核发现与宽度推导 |
 | `use_policy(policy)` | 在作用域内发布调度策略（contextvar 隔离） |
 | `split_document(...)` | 底层编排入口 |
 
-构件：`SplitModel`、`smart_split_paragraph`、`filter_special_char`、`MarkChunkHandle`、`ParserLimits`、`ImageAsset`、`SPLIT_HANDLERS`、`MARKDOWN_HEADINGS`、`DEFAULT_PATTERNS`、`BLANK_LINE`、`LITERAL_PATTERNS`。
+构件：`SplitModel`、`smart_split_paragraph`、`filter_special_char`、`MarkChunkHandle`、`ParserLimits`、`ImageAsset`（含 `.mime_type`、`.sha256`、`.dimensions`、`.data_uri()`、`.to_dict()`）、`SPLIT_HANDLERS`、`MARKDOWN_HEADINGS`、`DEFAULT_PATTERNS`、`BLANK_LINE`、`LITERAL_PATTERNS`。
 
-切片内部原理见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)；抽取过程见 [`docs/PORTING.md`](docs/PORTING.md)。
+切片内部原理见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)；同类库横向实测见 [`docs/BENCHMARK.md`](docs/BENCHMARK.md)；抽取过程见 [`docs/PORTING.md`](docs/PORTING.md)。
 
 ---
 
@@ -441,8 +584,12 @@ except SliceError as e:
 git clone https://github.com/guangxiangdebizi/smart-slice.git
 cd smart-slice
 pip install -e ".[dev]"
-pytest
+pytest                                   # 415 项测试，全离线
 ruff check smart_slice tests
+
+python scripts/benchmark.py              # 复现 docs/PERFORMANCE.md
+pip install chonkie langchain-text-splitters tiktoken
+python scripts/benchmark_peers.py        # 复现 docs/BENCHMARK.md
 ```
 
 ---

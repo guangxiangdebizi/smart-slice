@@ -176,6 +176,25 @@ def to_block_paragraph(tree_data_list: List[dict]):
 # 单条目 memo:同一 text 在一次 parse_title_level 级联中只需扫描一次。
 _SCAN_MEMO: List = [None, None]
 
+# pattern 列表 -> 各下标的规范标题层级(非规范 pattern 为 None)。
+# parse_title_level 每个块都要把同一份 pattern 列表逐个问一遍层级,而列表在
+# 一次切片中是同一个对象(SplitModel.content_level_pattern),层级也恒定不变。
+# 与 _SCAN_MEMO 同构的单条目身份 memo:持有列表引用即不会被回收,`is` 比较
+# 不存在 id 复用问题;额外比对 len() 防止调用方原地增删 pattern 后读到陈旧缓存。
+_PATTERN_LEVELS_MEMO: List = [None, -1, None]
+
+
+def _pattern_levels(content_level_pattern: List):
+    """返回与 content_level_pattern 等长的层级元组(不可判定的位置为 None)。"""
+    if _PATTERN_LEVELS_MEMO[0] is content_level_pattern and _PATTERN_LEVELS_MEMO[1] == len(content_level_pattern):
+        return _PATTERN_LEVELS_MEMO[2]
+    levels = tuple(heading_level_of(pattern) for pattern in content_level_pattern)
+    _PATTERN_LEVELS_MEMO[0] = content_level_pattern
+    _PATTERN_LEVELS_MEMO[1] = len(levels)
+    _PATTERN_LEVELS_MEMO[2] = levels
+    return levels
+
+
 
 def _heading_levels_present(text: str):
     """一次线性扫描得出 text 中出现的标题层级集合(仅对已掩码文本有效)。
@@ -213,11 +232,12 @@ def parse_title_level(text, content_level_pattern: List, index):
         return []
 
     levels = _heading_levels_present(text)
+    pattern_levels = _pattern_levels(content_level_pattern) if levels is not None else None
     cursor = index
     while cursor < len(content_level_pattern):
         pattern = content_level_pattern[cursor]
-        if levels is not None:
-            level = heading_level_of(pattern)
+        if pattern_levels is not None:
+            level = pattern_levels[cursor]
             if level is not None and level not in levels:
                 # 扫描证明该层级无候选:正则必然返回空,直接跳到下一层级
                 cursor += 1

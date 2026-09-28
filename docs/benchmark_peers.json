@@ -1,0 +1,346 @@
+{
+  "corpus_chars": 551565,
+  "reps": 5,
+  "limit": 1000,
+  "window": 256,
+  "python": "3.12.10",
+  "platform": "win32",
+  "methods": [
+    {
+      "label": "smart-slice slice_text(1000)",
+      "family": "smart-slice",
+      "budget": "1000 chars",
+      "note": "raw API output: heading lives in row['title'], not in the text",
+      "error": null,
+      "seconds": [
+        0.1214250000048196,
+        0.12641939999593887,
+        0.12419329999829642,
+        0.1229213000042364,
+        0.12855340000533033
+      ],
+      "median_ms": 124.19329999829642,
+      "structure": {
+        "chunks": 1693,
+        "chars_mean": 341.0,
+        "chars_median": 283,
+        "chars_min": 56,
+        "chars_max": 993,
+        "word_recall": 0.9855,
+        "unit_keep": 1.0,
+        "context": 0.4615,
+        "broken_fences": 0,
+        "orphan_table_rows": 0,
+        "dup": 1.047
+      }
+    },
+    {
+      "label": "smart-slice slice_text(1000) + title",
+      "family": "smart-slice",
+      "budget": "1000 chars",
+      "note": "heading chain re-attached - what an index should embed",
+      "error": null,
+      "seconds": [
+        0.12238840000645723,
+        0.1274179999891203,
+        0.12803100000019185,
+        0.17525669999304228,
+        0.12016989999392536
+      ],
+      "median_ms": 127.41799998912029,
+      "structure": {
+        "chunks": 1693,
+        "chars_mean": 382.1,
+        "chars_median": 324,
+        "chars_min": 99,
+        "chars_max": 1015,
+        "word_recall": 1.0,
+        "unit_keep": 1.0,
+        "context": 1.0,
+        "broken_fences": 0,
+        "orphan_table_rows": 0,
+        "dup": 1.173
+      }
+    },
+    {
+      "label": "smart-slice +chunk(256, carry_title)",
+      "family": "smart-slice",
+      "budget": "1000 then 256 chars",
+      "note": "paragraphs cut down to an embedding window",
+      "error": null,
+      "seconds": [
+        0.13470159999269526,
+        0.1337619999976596,
+        0.13509070000145584,
+        0.13588100000924896,
+        0.15512099998886697
+      ],
+      "median_ms": 135.09070000145584,
+      "structure": {
+        "chunks": 3462,
+        "chars_mean": 207.9,
+        "chars_median": 254.0,
+        "chars_min": 25,
+        "chars_max": 302,
+        "word_recall": 1.0,
+        "unit_keep": 0.325,
+        "context": 1.0,
+        "broken_fences": 480,
+        "orphan_table_rows": 506,
+        "dup": 1.305
+      }
+    },
+    {
+      "label": "smart-slice 1000 overlap=128",
+      "family": "smart-slice",
+      "budget": "1000 chars +128",
+      "note": "overlap on, tiles the source >1x",
+      "error": null,
+      "seconds": [
+        0.12332980000064708,
+        0.182564500006265,
+        0.13098590000299737,
+        0.13679699999920558,
+        0.12410069999168627
+      ],
+      "median_ms": 130.98590000299737,
+      "structure": {
+        "chunks": 1693,
+        "chars_mean": 507.0,
+        "chars_median": 450,
+        "chars_min": 218,
+        "chars_max": 1141,
+        "word_recall": 1.0,
+        "unit_keep": 1.0,
+        "context": 1.0,
+        "broken_fences": 0,
+        "orphan_table_rows": 455,
+        "dup": 1.556
+      }
+    },
+    {
+      "label": "chonkie TokenChunker(1000)",
+      "family": "chonkie",
+      "budget": "1000 chars (default tokenizer)",
+      "note": "",
+      "error": null,
+      "seconds": [
+        0.10307490000559483,
+        0.10392769999452867,
+        0.1016692000121111,
+        0.09909080000943504,
+        0.0971410000056494
+      ],
+      "median_ms": 101.6692000121111,
+      "structure": {
+        "chunks": 552,
+        "chars_mean": 999.2,
+        "chars_median": 1000.0,
+        "chars_min": 565,
+        "chars_max": 1000,
+        "word_recall": 0.9951,
+        "unit_keep": 0.66,
+        "context": 0.6808,
+        "broken_fences": 25,
+        "orphan_table_rows": 172,
+        "dup": 1.0
+      }
+    },
+    {
+      "label": "chonkie SentenceChunker(1000)",
+      "family": "chonkie",
+      "budget": "1000 chars (default tokenizer)",
+      "note": "",
+      "error": null,
+      "seconds": [
+        0.11217490000126418,
+        0.11032230001001153,
+        0.11238779999257531,
+        0.10866800000076182,
+        0.10830589999386575
+      ],
+      "median_ms": 110.32230001001153,
+      "structure": {
+        "chunks": 620,
+        "chars_mean": 889.6,
+        "chars_median": 933.0,
+        "chars_min": 583,
+        "chars_max": 1000,
+        "word_recall": 1.0,
+        "unit_keep": 0.88,
+        "context": 0.5692,
+        "broken_fences": 4,
+        "orphan_table_rows": 225,
+        "dup": 1.0
+      }
+    },
+    {
+      "label": "chonkie RecursiveChunker(1000)",
+      "family": "chonkie",
+      "budget": "1000 chars (default tokenizer)",
+      "note": "",
+      "error": null,
+      "seconds": [
+        0.009948599996278062,
+        0.010550999999395572,
+        0.01016830001026392,
+        0.00929109999560751,
+        0.009720400004880503
+      ],
+      "median_ms": 9.948599996278062,
+      "structure": {
+        "chunks": 621,
+        "chars_mean": 888.2,
+        "chars_median": 932,
+        "chars_min": 583,
+        "chars_max": 1000,
+        "word_recall": 1.0,
+        "unit_keep": 0.88,
+        "context": 0.5827,
+        "broken_fences": 4,
+        "orphan_table_rows": 222,
+        "dup": 1.0
+      }
+    },
+    {
+      "label": "langchain RecursiveCharacterTextSplitter(1000)",
+      "family": "langchain",
+      "budget": "1000 chars",
+      "note": "",
+      "error": null,
+      "seconds": [
+        0.003465500005404465,
+        0.0035029999999096617,
+        0.003310899992357008,
+        0.005774199991719797,
+        0.0032773999992059544
+      ],
+      "median_ms": 3.465500005404465,
+      "structure": {
+        "chunks": 741,
+        "chars_mean": 742.4,
+        "chars_median": 847,
+        "chars_min": 188,
+        "chars_max": 997,
+        "word_recall": 1.0,
+        "unit_keep": 1.0,
+        "context": 0.6385,
+        "broken_fences": 0,
+        "orphan_table_rows": 0,
+        "dup": 0.997
+      }
+    },
+    {
+      "label": "langchain RecursiveCharacter(1000, ovl=128)",
+      "family": "langchain",
+      "budget": "1000 chars +128",
+      "note": "",
+      "error": null,
+      "seconds": [
+        0.0031940000044414774,
+        0.003295499991509132,
+        0.0030583000043407083,
+        0.004549000004772097,
+        0.0032176999957300723
+      ],
+      "median_ms": 3.2176999957300723,
+      "structure": {
+        "chunks": 755,
+        "chars_mean": 754.7,
+        "chars_median": 861,
+        "chars_min": 188,
+        "chars_max": 998,
+        "word_recall": 1.0,
+        "unit_keep": 1.0,
+        "context": 0.9481,
+        "broken_fences": 0,
+        "orphan_table_rows": 0,
+        "dup": 1.033
+      }
+    },
+    {
+      "label": "langchain MarkdownTextSplitter(1000)",
+      "family": "langchain",
+      "budget": "1000 chars",
+      "note": "",
+      "error": null,
+      "seconds": [
+        0.007736100000329316,
+        0.0081783999921754,
+        0.009036900009959936,
+        0.008427699998719618,
+        0.008450399996945634
+      ],
+      "median_ms": 8.427699998719618,
+      "structure": {
+        "chunks": 745,
+        "chars_mean": 738.7,
+        "chars_median": 844,
+        "chars_min": 52,
+        "chars_max": 1000,
+        "word_recall": 1.0,
+        "unit_keep": 0.865,
+        "context": 0.6404,
+        "broken_fences": 480,
+        "orphan_table_rows": 0,
+        "dup": 0.998
+      }
+    },
+    {
+      "label": "langchain TokenTextSplitter(256)",
+      "family": "langchain",
+      "budget": "256 tiktoken tokens (~1024 chars)",
+      "note": "",
+      "error": null,
+      "seconds": [
+        0.1062586000043666,
+        0.1051389000058407,
+        0.10850349999964237,
+        0.11114130000350997,
+        0.10445529999560677
+      ],
+      "median_ms": 106.2586000043666,
+      "structure": {
+        "chunks": 1218,
+        "chars_mean": 452.8,
+        "chars_median": 454.0,
+        "chars_min": 53,
+        "chars_max": 490,
+        "word_recall": 0.9891,
+        "unit_keep": 0.43,
+        "context": 0.8442,
+        "broken_fences": 45,
+        "orphan_table_rows": 408,
+        "dup": 1.0
+      }
+    },
+    {
+      "label": "langchain MarkdownHeaderTextSplitter",
+      "family": "langchain",
+      "budget": "headings only, no length cap",
+      "note": "",
+      "error": null,
+      "seconds": [
+        0.04092369999852963,
+        0.04131970000162255,
+        0.040261000001919456,
+        0.041446300005191006,
+        0.047341699988464825
+      ],
+      "median_ms": 41.31970000162255,
+      "structure": {
+        "chunks": 280,
+        "chars_mean": 1973.9,
+        "chars_median": 2042.0,
+        "chars_min": 1131,
+        "chars_max": 2542,
+        "word_recall": 1.0,
+        "unit_keep": 1.0,
+        "context": 0.5385,
+        "broken_fences": 0,
+        "orphan_table_rows": 0,
+        "dup": 1.002
+      }
+    }
+  ]
+}

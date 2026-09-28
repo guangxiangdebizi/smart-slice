@@ -5,6 +5,99 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-28
+
+Two themes: **multimodal** - the pictures come out of the document and land next
+to the paragraphs they illustrate, ready for a vision-language embedding model -
+and **an honest horizontal benchmark** against the other chunking libraries,
+published together with its raw data.
+
+### Added
+
+- **`smart_slice.multimodal`** - the picture layer, sitting beside the public API
+  so no generated handler had to change:
+  - `slice_multimodal(content, name, ...)` / `slice_path_multimodal(path, ...)` -
+    one call returns a `MultimodalResult` holding `.paragraphs`, `.images`,
+    `.groups` (paragraph + its pictures), `.unattached`, `.records()`,
+    `.paired()`, `.stats()`, `.coverage` and `.summary()`;
+  - `ImageCollector` - a ready-made, thread-safe `save_image` sink. It
+    deduplicates by sha256 and returns the `{new_id: kept_id}` map the service
+    layer already applies, so duplicate pictures collapse onto one id *and* every
+    `./oss/file/{id}` reference in the paragraphs is rewritten to match;
+  - `scan_media(content, name)` / `extract_media(...)` / `container_kind(...)` -
+    open a container and recover its pictures without slicing it. Covers `zip`
+    (OOXML `word|ppt|xl/media/*`, ODF `Pictures/*`, EPUB chapters, plain image
+    archives), `pdf` (`page.images`, tagged with the page number), `mime`
+    (`.eml` / `.mhtml`, indexed by `Content-ID` and `Content-Location` so `cid:`
+    references resolve), `markup` (`<img src>` and `![]()`, `data:` URIs decoded)
+    and standalone picture files. Returns a `MediaExtraction` report
+    (`.assets`, `.kind`, `.scanned`, `.skipped`, `.errors`);
+  - `attach_images(paragraphs, assets)` - joins pictures to paragraphs in four
+    passes: the exact `./oss/file/{id}` reference, then the heading the picture
+    sat under, then the ~96 characters of visible text preceding the tag, then
+    "a standalone picture file is its own document". Whatever is left goes to
+    `.unattached`, never dropped. Each placed image records how it matched in
+    `meta["match"]`.
+- **`smart_slice._images`** - dependency-free image primitives: MIME sniffing
+  from magic bytes (PNG, JPEG, GIF, BMP, TIFF, WEBP, ICO, HEIC/HEIF, AVIF, SVG,
+  EMF, WMF) and pixel dimensions read straight out of the headers, with Pillow
+  only as an optional fallback. SVG detection requires `<svg>` to be the *root*
+  element, so an EPUB chapter with an inline `<svg>` is not mistaken for a
+  picture.
+- **`ImageAsset` computed views** - `.size`, `.sha256`, `.mime_type`, `.suffix`,
+  `.dimensions`, `.width`, `.height`, `.data_uri()` and `.to_dict(with_data=...)`,
+  all cached on the instance. The constructor signature is unchanged, so every
+  generated handler keeps working.
+- **`slice_many(..., collect_images=True)`** - routes each job through
+  `slice_multimodal` with one shared collector and publishes the batch's pictures
+  on `BatchReport.images`; `report.summary()` mentions the count. Per-document
+  ownership is tracked by the sink closure, so a thread pool cannot attribute one
+  document's pictures to another. Combining it with `backend="process"` raises a
+  `ValueError` instead of silently returning an empty list.
+- **`smart-slice media` subcommand** - report (and with `--out-dir`, extract) the
+  pictures in a document and the paragraph each belongs to: `--limit`,
+  `--probe {auto,always,never}`, `--include-vector`, `--min-side`,
+  `--no-external`, `--json`.
+- **`scripts/benchmark_peers.py`, `docs/BENCHMARK.md` and
+  `docs/benchmark_peers.json`** - the same 551 KB corpus run through
+  `smart-slice`, `chonkie` 1.7.0 and `langchain-text-splitters` 1.1.2, with
+  interleaved repetitions and five model-free structure metrics (word recall,
+  natural-unit survival, heading context, broken code fences, orphaned table
+  rows). Raw numbers are committed.
+- **`examples/multimodal.py`** - eight offline scenarios, fixtures included.
+- **83 new tests** (`tests/test_multimodal.py`), bringing the suite to 415. They
+  build valid PNGs from the specification with `zlib`, so the multimodal suite
+  needs neither Pillow nor a network. Fidelity cases assert
+  `slice_multimodal(...).paragraphs == slice_bytes(...)` for every container.
+
+### Changed
+
+- `parse_title_level` memoises the heading level of each pattern against the
+  pattern list itself (a single-entry identity memo plus a `len()` guard, the same
+  shape as the existing `_SCAN_MEMO` / `_MASK_MEMO`). The cascade was asking
+  `heading_level_of` 8,106 times per 551 KB document for seven possible answers.
+  Isolated effect: **4.36 us -> 3.91 us per call (-10.3%)**, about 0.9 ms of the
+  ~128 ms end-to-end pass - at this machine's noise floor, and reported as such in
+  `docs/PERFORMANCE.md`. Output is byte-identical.
+- README: the performance claim now states the honest trade (fastest structure,
+  not fastest clock) and links the peer benchmark. The test badge reads 415.
+
+### Notes and known limits
+
+- **No network I/O, still.** A remote `<img src="https://...">` becomes an asset
+  with zero bytes and `meta["src"]` set; downloading it is the caller's decision.
+- **Vector formats are opt-in.** `include_vector` defaults to False: SVG, EMF and
+  WMF are images to a document but not to a VL embedding model without a renderer.
+- **Spreadsheet cell pictures.** The generated `xlsx` handler still emits nothing
+  for cell images written by `openpyxl` (the drawing relationships it produces do
+  not match what the handler walks). The probe recovers them from `xl/media/*`,
+  so `slice_multimodal` returns them - as `.unattached`, since a cell anchor has
+  no paragraph to attach to.
+- **`.msg` (OLE) pictures are not recovered** by the probe; only what the handler
+  itself emits. Same for legacy binary `.doc` / `.ppt` / `.wps`.
+- `collect_images=True` and `slice_multimodal` hold image bytes in memory;
+  `keep_content=False` records metadata only. `max_images` (default 512) and
+  `max_image_bytes` (default 64 MiB) cap a single document.
 ## [0.4.0] - 2026-09-28
 
 One theme: **batch scheduling**. Slicing a single document was already fast;
@@ -306,5 +399,8 @@ web-framework coupling is removed.
   install the `ocr` extra to enable it.
 - Licensed under GPL-3.0, matching the upstream platform.
 
+[0.5.0]: https://github.com/guangxiangdebizi/smart-slice/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/guangxiangdebizi/smart-slice/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/guangxiangdebizi/smart-slice/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/guangxiangdebizi/smart-slice/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/guangxiangdebizi/smart-slice/releases/tag/v0.1.0

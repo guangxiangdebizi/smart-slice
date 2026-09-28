@@ -60,8 +60,8 @@ pip install smart-slice          # 核心：文本/markdown/配置/源码类文�
 pip install smart-slice[all]     # 下方全部格式
 ```
 
-已发布至 PyPI：[`smart-slice`](https://pypi.org/project/smart-slice/)。`0.3.0` 的 wheel 与 sdist 同时挂在
-[GitHub Release](https://github.com/guangxiangdebizi/smart-slice/releases/tag/v0.3.0)，由 `.github/workflows/release.yml` 从对应 tag 提交构建。
+已发布至 PyPI：[`smart-slice`](https://pypi.org/project/smart-slice/)。`0.4.0` 的 wheel 与 sdist 同时挂在
+[GitHub Release](https://github.com/guangxiangdebizi/smart-slice/releases/tag/v0.4.0)，由 `.github/workflows/release.yml` 从对应 tag 提交构建。
 
 按需 extras：
 
@@ -191,10 +191,14 @@ smart-slice slice report.pdf --limit 1000 --format json -o out.json
 smart-slice slice notes.md --format text --title-prefix --stats
 smart-slice detect mystery.bin
 smart-slice formats                       # 列出 handler 与缺失的可选依赖
+smart-slice batch docs/*.pdf -j 4 --backend process --stats   # 整个语料库
+smart-slice cores                         # 本机核数、推导宽度、亲和性掩码
 python -m smart_slice slice notes.md --format md
 ```
 
 - `slice`：`--format {json,jsonl,text,md}`、`--limit`、`--no-filter`、`--title-prefix`、`-o/--output`、`--stats`（摘要写 stderr）。
+- `batch`：在一套调度策略下切分多个文档：`-j/--concurrency {N,auto,cores,serial,2x}`、`--backend {thread,process,serial}`、`--pin-cores`、`--max-concurrency`、`--error-policy {raise_first,collect}`、`--unordered`、`--timeout`，以及 `slice` 的各项选项；`--format {json,jsonl,text,summary}`、`-o/--output`、`--stats`。退出码 1 会逐个点名失败文档，2 为用法错误。
+- `cores`：输出本机调度事实——可用核数、推导宽度、亲和性掩码、是否支持绑核，以及相关环境变量的当前取值（`--json` 供机器读取）。
 - `detect`：输出将命中该文件的 handler 类名（无命中退出码 2）。
 - `formats`：支持的扩展名与未安装的 extras（`--json` 供机器读取）。
 
@@ -264,6 +268,90 @@ rows = slice_bytes(data, "scan.docx", limit=1000, image_text_extractor=ocr)
 slice_bytes(data, "huge.pdf", limit=1000, progress_hook=lambda: job.touch())
 ```
 
+### 批量切片与调度
+
+单个文档用 `slice_path` 即可；整个语料库是调度问题。源平台切片链路底层的并发调度与
+核分配已收编进本包，每个开关都是参数，可按调用逐次选择：
+
+```python
+from smart_slice import slice_paths
+
+report = slice_paths(["a.pdf", "b.docx", "c.md"], limit=1000, concurrency=4)
+report.ok                 # 全部成功时为 True
+report.results            # 逐文档段落，顺序与输入严格一致
+report.paragraphs         # 全部段落按输入顺序拼接
+print(report.summary())   # 3/3 documents sliced in 412 ms (width=4, backend=thread, ...)
+```
+
+并发宽度是**变量**而非常量：可传整数（`4`），也可传 `"auto"`（默认）、`"cores"`、
+`"serial"`，或核数的倍数（`"2x"`、`"0.5x"`）：
+
+```python
+slice_paths(paths, concurrency="cores")     # 用满可用核
+slice_paths(paths, concurrency=2)           # 固定两个 worker
+slice_paths(paths, backend="serial")        # 完全不建池
+```
+
+`"auto"` 沿用被移植过来的分配规则：超过六核的机器取 3，六核及以下取核数的一半，
+且不低于 1。`available_cores()` 返回本进程**实际可用**的核数——Linux 读亲和性掩码，
+因此 `taskset` 与 cgroup 限额会被如实计入，而不是宿主机的核数：
+
+```python
+from smart_slice import available_cores, auto_concurrency
+available_cores(), auto_concurrency()       # 12 核笔记本上为 (12, 3)
+```
+
+核分配为可选项：`pin_cores=True` 时每个任务按轮转绑定到掩码中的一个核，任务结束
+（含失败）后还原掩码（Linux 用 `sched_setaffinity`，Windows 用 `SetThreadAffinityMask`，
+macOS 记日志后跳过）。`TaskOutcome.core` 记录每个任务实际拿到的核。
+
+一个批次可混用多种输入形态，策略对象可复用：
+
+```python
+from smart_slice import SchedulerPolicy, SliceJob, slice_many
+
+policy = SchedulerPolicy(concurrency=4, pin_cores=True, error_policy="collect")
+report = slice_many([
+    "report.pdf",                                    # 路径
+    ("upload.docx", uploaded_bytes),                  # (文件名, 字节)
+    SliceJob.from_path("big.md", limit=4000),         # 单文档覆盖
+    {"name": "notes.md", "content": raw},             # 映射
+    upload_handle,                                    # 任何带 .name/.read() 的对象
+], policy=policy, limit=1000)
+
+for outcome in report.outcomes:
+    if not outcome.ok:
+        log.warning("%s failed: %s", outcome.name, outcome.error)   # 状态码在 .error.code
+```
+
+失败语义沿用移植来源，并且可选：
+
+| `error_policy` | 行为 |
+|----------------|------|
+| `"raise_first"`（默认） | 所有文档仍会被尝试，随后按**输入序号最小**的失败原样抛出原异常对象（traceback 完整），其余失败逐个记日志 |
+| `"collect"` | 不抛异常，改由 `report.failures` / `outcome.error` 自查 |
+
+两种执行后端，选后端比选宽度更影响结果：
+
+| 后端 | 适用场景 | 代价 |
+|------|----------|------|
+| `"thread"`（默认） | worker 内还有 I/O（写库、调 embedding、下载），或需要传回调（`save_image`、`progress_hook`、`length_fn` 里的分词器） | 无额外开销；但受 GIL 限制，纯 Python 切片本身不会变快 |
+| `"process"` | 纯 CPU 密集、输入可序列化的大批量 | 解释器启动 + 字节双向 pickle；输入必须可 pickle |
+
+12 核笔记本实测（每篇 551 KB 结构化 markdown，CPython 3.12，Windows），
+复现命令 `python scripts/benchmark.py --batch`：
+
+| 批量 | serial | threads x4 | processes x4 |
+|------|--------|------------|--------------|
+| 12 篇（6.6 MB） | 1.00x | 1.07x | 0.69x |
+| 48 篇（26.5 MB） | 1.00x | 0.95x | **1.61x** |
+
+即：线程只在 GIL 被释放的地方换来重叠；进程后端在数十篇以上的 CPU 密集批次才换来
+真实吞吐。数据与推导见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)。
+
+底层 `run_parallel(items, worker, policy)` 就是这套「保序 + 错误隔离」的并行映射，
+不含任何切片逻辑，需要给自己的 worker 套调度时可直接使用。
+
 ### 面向 embedding 的二次分块
 
 切片产出语义段落，embedding 模型仍需固定长度输入。`chunk_paragraphs` 将段落切到窗口大小，段落仍作为检索单元：
@@ -306,7 +394,17 @@ except SliceError as e:
 | `SMART_SLICE_PARSER_MAX_ODF_TEXT_BYTES` | 33554432 | ODF 抽取文本上限 |
 | `SMART_SLICE_OCR_ENABLED` | `0` | 开启本地 OCR（需 `ocr` extra） |
 
-也可在调用校验器时直接传入 `ParserLimits` 实例覆盖。
+批量调度的配置方式相同，且每个变量都会被对应的调用参数覆盖：
+
+| 变量 | 默认值 | 含义 |
+|------|--------|------|
+| `SMART_SLICE_CONCURRENCY` | `auto` | 批量宽度：整数、`auto`、`cores`、`serial`，或倍数（`2x`） |
+| `SMART_SLICE_MAX_CONCURRENCY` | `32` | 推导宽度的上限 |
+| `SMART_SLICE_SCHEDULER_BACKEND` | `thread` | `thread`、`process` 或 `serial` |
+| `SMART_SLICE_PIN_CORES` | `0` | 为每个任务按轮转分配一个核 |
+
+也可在调用校验器时直接传入 `ParserLimits` 实例，或向 `slice_many` / `run_parallel`
+传入 `SchedulerPolicy` 覆盖。
 
 ---
 
@@ -323,6 +421,12 @@ except SliceError as e:
 | `missing_dependencies()` | 未安装的可选 extras |
 | `chunk_paragraphs(paragraphs, *, chunk_size)` | 面向 embedding 的二次分块 |
 | `chunk(text, *, chunk_size)` | 便捷封装 |
+| `slice_many(inputs, *, concurrency, backend, pin_cores, ...)` | 一次调用切分整个批次，返回 `BatchReport` |
+| `slice_paths(paths, ...)` | 面向路径列表的 `slice_many` |
+| `run_parallel(items, worker, policy)` | 保序 + 错误隔离的通用并行映射 |
+| `SchedulerPolicy` / `SliceJob` / `BatchReport` / `TaskOutcome` | 调度配置与结果对象 |
+| `available_cores()` / `auto_concurrency()` / `resolve_concurrency()` | 核发现与宽度推导 |
+| `use_policy(policy)` | 在作用域内发布调度策略（contextvar 隔离） |
 | `split_document(...)` | 底层编排入口 |
 
 构件：`SplitModel`、`smart_split_paragraph`、`filter_special_char`、`MarkChunkHandle`、`ParserLimits`、`ImageAsset`、`SPLIT_HANDLERS`、`MARKDOWN_HEADINGS`、`DEFAULT_PATTERNS`、`BLANK_LINE`、`LITERAL_PATTERNS`。

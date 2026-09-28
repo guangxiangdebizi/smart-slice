@@ -5,6 +5,90 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-28
+
+One theme: **batch scheduling**. Slicing a single document was already fast;
+ingesting a corpus meant writing your own pool. The concurrency-allocation layer
+that sat under the source platform's smart-slicing path is now part of the
+library, and every knob is a parameter you can pass at slice time.
+
+### Added
+
+- **`smart_slice.scheduler`** - the batch scheduler, with the semantics the
+  source platform's multi-file slicing path was built on:
+  - `slice_many(inputs, ...)` / `slice_paths(paths, ...)` - slice a corpus in one
+    call and get a `BatchReport` back;
+  - `run_parallel(items, worker, ...)` - the generic ordered parallel map under
+    it, for callers who want the scheduling without the slicing;
+  - `SchedulerPolicy` - the reusable configuration object (`concurrency`,
+    `backend`, `pin_cores`, `error_policy`, `ordered`, `timeout`,
+    `max_concurrency`, `task_setup`/`task_teardown`), plus `use_policy()` for
+    contextvar scoping;
+  - `SliceJob` / `as_slice_jobs` - one batch can mix paths, `(name, bytes)`
+    pairs, mappings, file-like upload handles and ready-made jobs.
+- **Derived width instead of a hard-coded one.** `available_cores()` reports the
+  cores this process may actually use (Linux affinity mask, `process_cpu_count`
+  elsewhere), and `auto_concurrency()` applies the source platform's allocation
+  rule: 3 workers above six cores, half the cores below that, never fewer than 1.
+  Accepted wherever a width is wanted: `4`, `"auto"`, `"cores"`, `"serial"`,
+  `"2x"`, `"0.5x"`.
+- **Core allocation (`pin_cores=True`).** Tasks are bound to one core each,
+  round-robin over the process mask, and the mask is restored when the task ends
+  - including when it fails. The source platform did this with
+  `sched_setaffinity` and documented Windows as unsupported; here the same
+  allocation also runs on Windows via `SetThreadAffinityMask` (with correct
+  64-bit prototypes - the default `ctypes` `restype` truncates the handle and
+  silently turns pinning into a no-op), and degrades to a logged no-op on macOS.
+- **Process backend** (`backend="process"`, `spawn` context) for CPU-bound
+  corpora, alongside the default thread backend and `backend="serial"`.
+- **Environment overrides**, resolved per call: `SMART_SLICE_CONCURRENCY`,
+  `SMART_SLICE_MAX_CONCURRENCY`, `SMART_SLICE_SCHEDULER_BACKEND`,
+  `SMART_SLICE_PIN_CORES`.
+- **CLI**: `smart-slice batch a.pdf b.docx -j 4 --backend process --pin-cores
+  --error-policy collect --format jsonl`, and `smart-slice cores` to show the
+  detected cores, derived width, affinity mask and pinning support.
+- **`scripts/benchmark.py --batch`** - reproduces the backend/width table below.
+
+### Changed
+
+- `docs/PERFORMANCE.md` no longer lists parallelism under "not tried": it is
+  shipped, with the measurements that say when it pays (spoiler: threads do not
+  speed up pure-Python slicing; processes do, from a few dozen documents up).
+
+### Fixed
+
+- **`SliceError` and its subclasses could not be pickled.** `Exception.__reduce__`
+  replays `args`, which for these classes is only `(message,)`, so
+  reconstruction raised `TypeError` and dropped `code`. Each now defines
+  `__reduce__`, which is what lets a slicing failure travel back from a process
+  worker as the same type with the same code.
+- **Ambient `ChunkingOptions` were silently dropped inside worker threads.** A
+  new thread starts with an empty contextvar context, so a batch run under
+  `with use_options(opts):` would have sliced with the defaults. `slice_many`
+  now captures the ambient options and passes them explicitly; explicit
+  `limit=`/`overlap=`/`options=` keywords still win.
+- **The CLI could not be configured through the environment.** `--concurrency`
+  defaulted to the literal `"auto"`, which outranked `SMART_SLICE_CONCURRENCY`
+  and made the variable dead for every CLI user. It now defaults to unset.
+- **A failed batch dumped a traceback.** The CLI collects outcomes internally and
+  prints one line naming the document, its message and its code, then exits 1.
+
+### Measured (12 cores, CPython 3.12, Windows; 551 KB structured markdown each)
+
+| Batch | serial | threads x4 | processes x4 |
+|-------|--------|------------|--------------|
+| 12 documents (6.6 MB) | 2619 ms (1.00x) | 2455 ms (1.07x) | 3790 ms (0.69x) |
+| 48 documents (26.5 MB) | 10056 ms (1.00x) | 10615 ms (0.95x) | 6255 ms (**1.61x**) |
+
+Read this before choosing a backend: the slicer is pure Python, so threads only
+overlap the GIL-releasing work inside parsers (zip inflate, image decode, OCR)
+and the caller's own I/O - which is exactly the case the source platform tuned
+its width of 3 for, since each of its tasks also wrote to a database and
+dispatched embedding jobs. For a CPU-bound corpus, `backend="process"` is what
+pays, and only once the batch is big enough to amortise interpreter startup and
+pickling. Threads stay the default because they accept callbacks (`save_image`,
+`progress_hook`, a tokenizer in `length_fn`) and have no startup cost.
+
 ## [0.3.0] - 2026-09-27
 
 Two themes: a **correctness fix for the published wheel** (a clean install could not

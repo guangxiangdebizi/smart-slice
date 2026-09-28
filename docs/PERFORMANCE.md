@@ -164,12 +164,88 @@ Second-stage chunking (`chunk_paragraphs`) costs more per character than slicing
 because it re-runs the splitter on every paragraph: 13 ms (no overlap) vs 27 ms
 (overlap 40) for the same corpus.
 
+## Batch scheduling: what parallelism actually buys
+
+0.1.0-0.3.0 shipped no parallelism, on the reasoning recorded below ("callers can
+parallelise across documents themselves"). 0.4.0 ships the scheduler anyway,
+because bulk ingestion is the common case and the ordering/failure semantics are
+easy to get subtly wrong. The measurements are here so the choice of backend is
+made from numbers rather than from the word "parallel".
+
+`python scripts/benchmark.py --batch` on a 12-core laptop, CPython 3.12, Windows,
+each document the 551 KB corpus described above, best of N runs:
+
+**12 documents (6.62 MB), 3 repetitions**
+
+| Policy | Batch time | Throughput | Speedup |
+|--------|-----------|------------|---------|
+| serial | 2618.9 ms | 2.53 MB/s | 1.00x |
+| thread x2 | 2489.2 ms | 2.66 MB/s | 1.05x |
+| thread x3 (the `auto` width) | 2485.4 ms | 2.66 MB/s | 1.05x |
+| thread x4 | 2454.9 ms | 2.70 MB/s | 1.07x |
+| thread x12 | 2489.6 ms | 2.66 MB/s | 1.05x |
+| process x2 | 3103.3 ms | 2.13 MB/s | 0.84x |
+| process x4 | 3790.2 ms | 1.75 MB/s | 0.69x |
+
+**48 documents (26.48 MB), 1 repetition**
+
+| Policy | Batch time | Throughput | Speedup |
+|--------|-----------|------------|---------|
+| serial | 10055.7 ms | 2.63 MB/s | 1.00x |
+| thread x2 | 10643.0 ms | 2.49 MB/s | 0.94x |
+| thread x4 | 10615.3 ms | 2.49 MB/s | 0.95x |
+| thread x12 | 11319.3 ms | 2.34 MB/s | 0.89x |
+| process x2 | 7421.8 ms | 3.57 MB/s | 1.35x |
+| process x4 | 6254.5 ms | 4.23 MB/s | **1.61x** |
+
+### Reading the numbers
+
+**Threads do not speed up this workload, and on a large batch they make it
+slightly worse.** Slicing is CPU-bound pure Python: the heading scan, the tree
+walk and the paragraph assembly all hold the GIL, so N threads time-slice one
+core and pay context-switching on top. The 1.05-1.07x at 12 documents is the
+file-read and `zipfile`/`charset-normalizer` C calls overlapping, not the slicer
+parallelising; by 48 documents even that is gone (0.89-0.95x). Width makes no
+difference - x2 and x12 land within noise of each other, which is the signature
+of a serialised bottleneck.
+
+Threads still earn their place as the default for two reasons the benchmark
+cannot show: they accept unpicklable arguments (`save_image`, `progress_hook`, a
+tokenizer in `length_fn`), and they overlap *the caller's* I/O. That second point
+is why the source platform ran a width of 3 rather than 1 - each of its tasks also
+wrote rows to a database and dispatched embedding jobs, both of which release the
+GIL. If your worker does the same, measure your own pipeline rather than this one.
+
+**Processes are the only backend that scales this workload, and only once the
+batch is big enough.** At 12 documents they are 0.69-0.84x: `spawn` starts a fresh
+interpreter per worker and the document bytes are pickled in both directions,
+which for 6.6 MB costs more than the 2.6 s of work saved. At 48 documents the
+fixed cost is amortised over 4x more work and process x4 reaches 1.61x (4.23 MB/s
+vs 2.63 MB/s). The crossover on this machine is somewhere between the two -
+roughly a few dozen documents, or sooner if the documents are large.
+
+Scaling is sub-linear (1.61x on 4 workers) for the expected reasons: the GIL is
+gone but memory bandwidth, the pickle copies and Windows process startup are not.
+Linux `spawn` is materially cheaper than Windows, so the crossover arrives earlier
+there; the numbers above are the pessimistic case.
+
+### What this means in practice
+
+| Situation | Recommendation |
+|-----------|----------------|
+| a handful of documents | `backend="serial"` or the default; scheduling cannot pay for itself |
+| CPU-bound corpus, tens of documents or more, plain files | `backend="process"`, `concurrency="cores"` |
+| worker also does I/O (database, object store, embedding calls) | `backend="thread"`, `concurrency=3` or `auto` |
+| callbacks needed (`save_image`, `progress_hook`, custom `length_fn`) | `backend="thread"` - processes cannot pickle them |
+| shared machine, must not take every core | `pin_cores=True` with an explicit `concurrency`, or `max_concurrency` |
+
+`pin_cores` was not benchmarked: binding a thread to a core does not create
+parallelism where the GIL removed it, and for the process backend the OS already
+places short-lived children sensibly. It exists for shared hosts where
+predictable placement matters more than peak throughput.
+
 ## Not tried / not done
 
-- **Parallelism.** Slicing is CPU-bound pure Python and would release the GIL only
-  with multiprocessing. Callers can trivially parallelise across documents
-  themselves, which is where the real throughput is for bulk ingestion; doing it
-  inside the library would impose a process/thread model on every consumer.
 - **Rewriting the heading regexes in C.** The patterns use lookbehind and lookahead
   that would have to be reimplemented by hand. Given that regex time already fell
   from 2.39 s to 0.35 s, the remaining headroom does not justify the semantic risk.
@@ -185,6 +261,7 @@ pip install -e ".[dev]"
 python scripts/benchmark.py            # timing table + profile
 python scripts/benchmark.py --profile  # cProfile breakdown of the hot path
 python scripts/benchmark.py --ab       # C vs pure-Python accelerator comparison
+python scripts/benchmark.py --batch --documents 48   # scheduler: serial vs threads vs processes
 ```
 
 `scripts/benchmark.py` builds the corpus described above from a fixed seed, so the

@@ -7,8 +7,15 @@ How `smart-slice` turns a document into retrieval-ready paragraphs.
 ```
 public API  (smart_slice/__init__.py)
    slice_text / slice_bytes / slice_path / extract_text / chunk_paragraphs / detect_handler
-        |
-        v
+   slice_many / slice_paths            <- batch entry points
+        |                                    |
+        |                                    v
+        |                        scheduler  (smart_slice/scheduler.py)
+        |                           width derivation, core allocation, ordered
+        |                           parallel map, error policy, BatchReport
+        |                                    |  (calls back into the public API
+        |                                    |   once per document, in a worker)
+        v                                    v
 service  (smart_slice/service.py)
    split_document(): bytes -> file adapter -> handler dispatch -> image rewrite/OCR -> normalise
         |
@@ -27,6 +34,12 @@ Each layer has one job:
 
 - **Public API** — the ergonomics layer. Normalises arguments, picks defaults
   (`DEFAULT_LIMIT`, per-format patterns), and exposes the convenience verbs.
+- **scheduler** — the batch layer, and the only one that knows about concurrency.
+  It sits *above* the public API rather than inside it: `slice_many` hands each
+  document to `slice_bytes` from a worker, so a batch is exactly N independent
+  single-document slices. That keeps the slicing core free of any threading
+  model, and it means the parallel and serial paths cannot diverge - they run the
+  same code, which the test suite asserts byte-for-byte.
 - **service** — orchestration. It is the single funnel every entry point goes
   through, so image handling, reference rewriting and output normalisation happen
   in exactly one place.
@@ -34,6 +47,59 @@ Each layer has one job:
   embedded images) out of one family of formats; it delegates the actual cutting
   to the chunker.
 - **chunker** — the slicing algorithm, format-agnostic. It only ever sees a string.
+
+## Batch scheduling
+
+`scheduler.py` is the concurrency-allocation layer the source platform ran under
+its multi-file slicing path, generalised into a library.
+
+**Width is derived, not fixed.** `available_cores()` asks the OS what this
+process may actually use - `sched_getaffinity` on Linux (so `taskset` and cgroup
+limits are honoured), `process_cpu_count`/`cpu_count` elsewhere.
+`auto_concurrency()` then applies the allocation rule the scheduler was
+extracted from: 3 workers above six cores, half the cores below that, never fewer
+than one. `resolve_concurrency()` accepts every user-facing form (`4`, `"auto"`,
+`"cores"`, `"serial"`, `"2x"`) and clamps the result by `max_concurrency` and by
+the task count, so eight workers are never spun up for three files. An
+unrecognised token raises `ValueError` instead of quietly falling back - a typo
+in a config file should be visible.
+
+**Core allocation** (`pin_cores=True`) binds each task to one core of the mask,
+round-robin by task index, and restores the previous mask in a `finally` so a
+failing task cannot leave a worker pinned. The platform implemented this with
+`sched_setaffinity` and documented Windows as unsupported; here the same
+allocation also runs on Windows through `SetThreadAffinityMask`. The `ctypes`
+prototypes are declared explicitly for that: the default `restype` is a 32-bit
+`c_int`, which truncates the `HANDLE` pseudo-handles from
+`GetCurrentProcess`/`GetCurrentThread` on 64-bit Windows and turns pinning into
+a silent no-op.
+
+**Ordering and failure** are the ported contract. Results are back-filled by
+submission index rather than appended on completion, so `report.results[i]`
+always corresponds to `inputs[i]`. Every item is attempted regardless of other
+failures; with `error_policy="raise_first"` the error belonging to the *lowest
+failing index* is re-raised as the original object (its traceback survives the
+thread hop) and the remaining failures are logged first, so nothing is silently
+swallowed. `"collect"` returns them all as `TaskOutcome.error`.
+
+**Backends.** `thread` is the default: no startup cost, and it accepts
+unpicklable arguments (`save_image`, `progress_hook`, a tokenizer in
+`ChunkingOptions.length_fn`). `process` uses a `spawn` context - `fork` would
+copy whatever the host holds (locks, sockets, a half-initialised OCR engine)
+into the worker - and needs picklable jobs, which is why `SliceError` defines
+`__reduce__` (the default `Exception.__reduce__` replays only `(message,)`,
+dropping `code` and raising `TypeError` on the way back). `serial` never builds
+a pool. Widths of 1 and single-item batches also take the serial path, so the
+no-pool behaviour is identical to a plain loop.
+
+**Options cross the thread boundary explicitly.** A new thread starts with an
+empty `contextvars` context, so the ambient `ChunkingOptions` published by an
+enclosing `use_options(...)` would not reach a pool worker. `slice_many`
+captures it in the calling thread and passes it as an explicit `options=`
+argument; explicit keywords still win, because `resolve_options` merges keywords
+over the object.
+
+Measured backend/width numbers are in `docs/PERFORMANCE.md`.
 
 ## The handler contract
 

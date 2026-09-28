@@ -4,7 +4,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-220%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-332%20passed-brightgreen.svg)]()
 [![PyPI version](https://img.shields.io/pypi/v/smart-slice.svg)](https://pypi.org/project/smart-slice/)
 
 ```python
@@ -63,8 +63,8 @@ pip install smart-slice[all]            # every format below
 ```
 
 Published on PyPI as [`smart-slice`](https://pypi.org/project/smart-slice/). The
-`0.3.0` wheel and sdist are also attached to the
-[GitHub Release](https://github.com/guangxiangdebizi/smart-slice/releases/tag/v0.3.0),
+`0.4.0` wheel and sdist are also attached to the
+[GitHub Release](https://github.com/guangxiangdebizi/smart-slice/releases/tag/v0.4.0),
 built from the tagged commit by `.github/workflows/release.yml`.
 
 Targeted extras:
@@ -209,11 +209,15 @@ smart-slice slice notes.md --overlap-ratio 0.15 --format text
 smart-slice chunk notes.md --chunk-size 256 --chunk-overlap 40 --carry-title
 smart-slice detect mystery.bin
 smart-slice formats            # list handlers + missing optional deps
+smart-slice batch docs/*.pdf -j 4 --backend process --stats   # a whole corpus
+smart-slice cores              # detected cores, derived width, affinity mask
 python -m smart_slice slice notes.md --format md   # module form
 ```
 
 - `slice` — `--format {json,jsonl,text,md}`, `--limit`, `--overlap`, `--overlap-ratio`, `--overlap-section-only`, `--no-filter`, `--title-prefix`, `-o/--output`, `--stats` (summary to stderr).
 - `chunk` — slices first, then cuts paragraphs to an embedding window: `--chunk-size`, `--chunk-overlap`, `--carry-title`, `-o/--output`, `--stats`. Emits one JSON object per chunk.
+- `batch` — slices many documents under one scheduling policy: `-j/--concurrency {N,auto,cores,serial,2x}`, `--backend {thread,process,serial}`, `--pin-cores`, `--max-concurrency`, `--error-policy {raise_first,collect}`, `--unordered`, `--timeout`, plus the `slice` options; `--format {json,jsonl,text,summary}`, `-o/--output`, `--stats`. Exit 1 names every failed document, exit 2 is a usage error.
+- `cores` — the scheduling facts for this machine: usable cores, derived width, affinity mask, pinning support, and which environment variables are set (`--json` for machines).
 - `detect` — prints the handler class that would claim the file (exit 2 if none).
 - `formats` — supported extensions and which extras are not installed (`--json` for machines).
 
@@ -328,6 +332,97 @@ rows = slice_bytes(data, "scan.docx", limit=1000, image_text_extractor=ocr)
 slice_bytes(data, "huge.pdf", limit=1000, progress_hook=lambda: job.touch())
 ```
 
+### Batch slicing and scheduling
+
+One document is a `slice_path` call. A corpus is a scheduling problem, and the
+scheduler that sat under the source platform's slicing path ships with the
+package - every knob is a parameter, so you choose the policy per call:
+
+```python
+from smart_slice import slice_paths
+
+report = slice_paths(["a.pdf", "b.docx", "c.md"], limit=1000, concurrency=4)
+report.ok                 # True when every document sliced
+report.results            # per-document paragraphs, in input order
+report.paragraphs         # all of them concatenated, in input order
+print(report.summary())   # 3/3 documents sliced in 412 ms (width=4, backend=thread, ...)
+```
+
+Width is a *variable*, not a constant. Accepted forms: an integer (`4`), or
+`"auto"` (the default), `"cores"`, `"serial"`, or a multiple of the core count
+(`"2x"`, `"0.5x"`):
+
+```python
+slice_paths(paths, concurrency="cores")     # every usable core
+slice_paths(paths, concurrency=2)           # exactly two workers
+slice_paths(paths, backend="serial")        # no pool at all
+```
+
+`"auto"` applies the allocation rule the scheduler was extracted from: 3 workers
+on a machine with more than six cores, half the cores below that, never fewer
+than one. `available_cores()` reports what the process may actually use - the
+Linux affinity mask, so `taskset` and cgroup limits are honoured rather than the
+host's core count:
+
+```python
+from smart_slice import available_cores, auto_concurrency
+available_cores(), auto_concurrency()       # (12, 3) on a 12-core laptop
+```
+
+Core allocation is opt-in: `pin_cores=True` binds each task to one core of the
+mask, round-robin, and restores the mask when the task ends (Linux
+`sched_setaffinity`, Windows `SetThreadAffinityMask`, a logged no-op on macOS).
+`TaskOutcome.core` records what each task actually got.
+
+Batches can mix input shapes, and one policy object can be reused:
+
+```python
+from smart_slice import SchedulerPolicy, SliceJob, slice_many
+
+policy = SchedulerPolicy(concurrency=4, pin_cores=True, error_policy="collect")
+report = slice_many([
+    "report.pdf",                                    # path
+    ("upload.docx", uploaded_bytes),                  # (name, bytes)
+    SliceJob.from_path("big.md", limit=4000),         # per-document override
+    {"name": "notes.md", "content": raw},             # mapping
+    upload_handle,                                    # anything with .name/.read()
+], policy=policy, limit=1000)
+
+for outcome in report.outcomes:
+    if not outcome.ok:
+        log.warning("%s failed: %s", outcome.name, outcome.error)   # code in .error.code
+```
+
+Failure semantics are the ported ones and they are a choice:
+
+| `error_policy` | Behaviour |
+|----------------|-----------|
+| `"raise_first"` (default) | every document is still attempted, then the error of the **lowest failing index** is re-raised as the original object (traceback intact) and the remaining failures are logged |
+| `"collect"` | nothing is raised; inspect `report.failures` / `outcome.error` |
+
+Two backends, and the choice matters more than the width:
+
+| Backend | Use it when | Cost |
+|---------|-------------|------|
+| `"thread"` (default) | the worker also does I/O (database writes, embedding calls, downloads), or you pass callbacks (`save_image`, `progress_hook`, a tokenizer in `length_fn`) | none; but the GIL means pure-Python slicing does not speed up |
+| `"process"` | a CPU-bound corpus of plain files, big enough to amortise startup | interpreter startup plus pickling the bytes both ways; inputs must be picklable |
+
+Measured on a 12-core laptop (551 KB structured markdown per document, CPython
+3.12, Windows) - `python scripts/benchmark.py --batch`:
+
+| Batch | serial | threads x4 | processes x4 |
+|-------|--------|------------|--------------|
+| 12 documents (6.6 MB) | 1.00x | 1.07x | 0.69x |
+| 48 documents (26.5 MB) | 1.00x | 0.95x | **1.61x** |
+
+So: threads buy you overlap only where the GIL is released; processes buy real
+throughput on CPU-bound batches from a few dozen documents up. Details and the
+reasoning are in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+
+Underneath, `run_parallel(items, worker, policy)` is the same ordered,
+error-isolating parallel map without any slicing in it - use it when you want
+the scheduling for your own worker.
+
 ### Second-stage chunking for embeddings
 
 Slicing yields semantic paragraphs; embedding models still need fixed-size input.
@@ -366,7 +461,18 @@ Defensive parser caps (anti decompression-bomb guards) come from the environment
 | `SMART_SLICE_PARSER_MAX_ODF_TEXT_BYTES` | 33554432 | max ODF extracted text |
 | `SMART_SLICE_OCR_ENABLED` | `0` | enable local OCR (needs the `ocr` extra) |
 
-Or override per call by passing a `ParserLimits` instance to the validators.
+Batch scheduling is configured the same way, and every variable is overridden by
+the matching argument:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `SMART_SLICE_CONCURRENCY` | `auto` | batch width: an integer, `auto`, `cores`, `serial`, or a multiple (`2x`) |
+| `SMART_SLICE_MAX_CONCURRENCY` | `32` | ceiling for a derived width |
+| `SMART_SLICE_SCHEDULER_BACKEND` | `thread` | `thread`, `process` or `serial` |
+| `SMART_SLICE_PIN_CORES` | `0` | allocate one core per task, round-robin |
+
+Or override per call by passing a `ParserLimits` instance to the validators, or a
+`SchedulerPolicy` to `slice_many` / `run_parallel`.
 
 ---
 
@@ -383,6 +489,12 @@ Or override per call by passing a `ParserLimits` instance to the validators.
 | `missing_dependencies()` | optional extras not installed |
 | `chunk_paragraphs(paragraphs, *, chunk_size)` | second-stage embedding chunking |
 | `chunk(text, *, chunk_size)` | convenience wrapper |
+| `slice_many(inputs, *, concurrency, backend, pin_cores, ...)` | slice a corpus in one call -> `BatchReport` |
+| `slice_paths(paths, ...)` | `slice_many` over filesystem paths |
+| `run_parallel(items, worker, policy)` | the ordered, error-isolating parallel map |
+| `SchedulerPolicy` / `SliceJob` / `BatchReport` / `TaskOutcome` | scheduling configuration and results |
+| `available_cores()` / `auto_concurrency()` / `resolve_concurrency()` | core discovery and width derivation |
+| `use_policy(policy)` | publish a policy for a block (contextvar-scoped) |
 | `split_document(...)` | the low-level orchestration entry point |
 
 Building blocks: `SplitModel`, `smart_split_paragraph`, `filter_special_char`, `MarkChunkHandle`, `ParserLimits`, `ImageAsset`, `SPLIT_HANDLERS`, `MARKDOWN_HEADINGS`, `DEFAULT_PATTERNS`, `BLANK_LINE`, `LITERAL_PATTERNS`.

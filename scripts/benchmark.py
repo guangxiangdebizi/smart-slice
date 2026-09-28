@@ -4,6 +4,7 @@
     python scripts/benchmark.py            # timing table
     python scripts/benchmark.py --profile  # cProfile breakdown of the hot path
     python scripts/benchmark.py --ab       # C accelerator vs pure-Python scan
+    python scripts/benchmark.py --batch    # batch scheduler: serial vs threads vs processes
 
 The corpus is generated from a fixed seed, so runs are comparable across machines
 in relative terms (absolute times obviously depend on the CPU).
@@ -11,6 +12,7 @@ in relative terms (absolute times obviously depend on the CPU).
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import string
 import sys
@@ -148,13 +150,67 @@ def cmd_ab(doc: str) -> None:
     print("Rename smart_slice/_speedup*.pyd away and re-run to measure the Python path.")
 
 
+def cmd_batch(doc: str, documents: int, repetitions: int) -> None:
+    """Measure the batch scheduler: serial vs thread widths vs process widths.
+
+    Builds ``documents`` real files on disk (so the measurement includes the
+    read, not just the slice) and times a full batch pass for each policy.
+    """
+    import tempfile
+
+    from smart_slice import available_cores, auto_concurrency, slice_paths
+
+    directory = tempfile.mkdtemp(prefix="ss-bench-batch-")
+    paths = []
+    for index in range(documents):
+        path = os.path.join(directory, f"bench{index:03d}.md")
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(doc)
+        paths.append(path)
+
+    total_mb = sum(os.path.getsize(path) for path in paths) / 1e6
+    print(f"corpus: {documents} documents, {total_mb:.2f} MB total "
+          f"({total_mb / documents:.2f} MB each)")
+    print(f"machine: {available_cores()} usable cores, auto width = {auto_concurrency()}")
+    print()
+
+    configs = [("serial", "serial", None)]
+    for width in (2, 4, auto_concurrency(), available_cores()):
+        configs.append((f"thread x{width}", "thread", width))
+    for width in (2, 4):
+        configs.append((f"process x{width}", "process", width))
+
+    baseline = None
+    print(f"{'policy':<16} {'batch time':>12} {'throughput':>12} {'speedup':>9}")
+    for label, backend, width in configs:
+        best = None
+        for _ in range(repetitions):
+            start = time.perf_counter()
+            report = slice_paths(paths, backend=backend, concurrency=width, limit=1000)
+            elapsed = time.perf_counter() - start
+            assert report.ok, [str(o.error) for o in report.failures]
+            best = elapsed if best is None else min(best, elapsed)
+        if baseline is None:
+            baseline = best
+        print(f"{label:<16} {best * 1000:9.1f} ms {total_mb / best:9.2f} MB/s "
+              f"{baseline / best:8.2f}x")
+
+    print()
+    print("Threads only overlap the GIL-releasing work inside the parsers; the")
+    print("pure-Python slicer itself serialises.  Processes bypass the GIL but pay")
+    print("interpreter startup (spawn) and pickle the document bytes both ways.")
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--profile", action="store_true", help="cProfile breakdown")
     mode.add_argument("--ab", action="store_true", help="C vs Python accelerator")
+    mode.add_argument("--batch", action="store_true", help="batch scheduler: serial vs threads vs processes")
     mode.add_argument("--dump-corpus", metavar="PATH", help="write the corpus and exit")
+    parser.add_argument("--documents", type=int, default=12, help="batch size for --batch (default 12)")
+    parser.add_argument("--repetitions", type=int, default=3, help="runs per policy for --batch (best of N)")
     args = parser.parse_args(argv)
 
     doc = build_corpus()
@@ -167,6 +223,8 @@ def main(argv=None) -> int:
         cmd_profile(doc)
     elif args.ab:
         cmd_ab(doc)
+    elif args.batch:
+        cmd_batch(doc, args.documents, args.repetitions)
     else:
         cmd_timing(doc)
     return 0

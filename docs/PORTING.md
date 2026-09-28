@@ -104,10 +104,14 @@ assertions stay untouched:
   normalisation, OCR-injection branching, image-id rewriting, progress hooks.
 
 Plus `tests/test_public_api.py`, written for this package, covering the public
-façade and the CLI.
+façade and the CLI, and `tests/test_scheduler.py`, which ports the platform's
+parallel-slicing test matrix (order preservation, Barrier-proven concurrency with
+a falsifiable negative, error isolation, first-failure-by-index, the serial fast
+path, per-task hooks) and adds the library-level surface around it (width
+derivation, core allocation, the batch API, pickling, the CLI).
 
-Current status: **119 passed, 1 skipped** on Python 3.12 (the skip is an
-optional-dependency branch).
+Current status: **332 tests** (331 passed, 1 skipped) on Python 3.12. The skip is
+a Linux-only affinity assertion that cannot run on Windows.
 
 ## Keeping the port honest
 
@@ -125,4 +129,14 @@ Contributors should treat files under `smart_slice/` that carry the
 "Derived from the source platform" header as generated: do not hand-edit them.
 The hand-written modules are the public façade (`__init__.py`), `patterns.py`,
 `_config.py`, `_logging.py`, `_i18n.py`, `_uuid.py`, `_markdown.py`,
-`exceptions.py`, `types.py`, and the three package `__init__.py` registries.
+`exceptions.py`, `types.py`, `scheduler.py`, and the three package `__init__.py`
+registries.
+
+`scheduler.py` is hand-written but not original: its ordering, error-isolation and
+per-task-hook semantics are the platform's multi-file slicing contract,
+re-expressed without the framework (its per-task database-connection cleanup
+becomes the generic `task_setup`/`task_teardown` pair, its fixed batch width
+becomes a derived one, its Linux-only core pinning also runs on Windows). The
+slicing code it schedules is unchanged, so a batch is N independent
+single-document slices - which is what makes "parallel and serial produce
+identical output" a tested property rather than a hope.

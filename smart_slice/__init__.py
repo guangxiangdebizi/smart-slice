@@ -65,6 +65,32 @@ from .patterns import (
     MARKDOWN_HEADINGS,
     patterns_for,
 )
+from .scheduler import (
+    BACKEND_PROCESS,
+    BACKEND_SERIAL,
+    BACKEND_THREAD,
+    DEFAULT_MAX_CONCURRENCY,
+    ERROR_COLLECT,
+    ERROR_RAISE_FIRST,
+    POLICY_AUTO,
+    POLICY_CORES,
+    POLICY_SERIAL,
+    BatchReport,
+    SchedulerPolicy,
+    SliceJob,
+    TaskOutcome,
+    as_slice_jobs,
+    auto_concurrency,
+    available_cores,
+    current_policy,
+    default_policy,
+    resolve_concurrency,
+    resolve_policy,
+    run_parallel,
+    slice_many,
+    slice_paths,
+    use_policy,
+)
 from .service import (
     BytesSplitFile,
     LazyImageTextExtractor,
@@ -75,7 +101,7 @@ from .service import (
 )
 from .types import ImageAsset, Paragraph, SplitResult
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "__version__",
@@ -83,6 +109,8 @@ __all__ = [
     "slice_bytes",
     "slice_text",
     "slice_path",
+    "slice_many",
+    "slice_paths",
     "split_document",
     "chunk",
     "chunk_paragraphs",
@@ -93,6 +121,29 @@ __all__ = [
     "smart_split_paragraph",
     "filter_special_char",
     "MarkChunkHandle",
+    # batch scheduling ("how many documents at once, on which cores")
+    "SchedulerPolicy",
+    "BatchReport",
+    "SliceJob",
+    "TaskOutcome",
+    "as_slice_jobs",
+    "run_parallel",
+    "resolve_policy",
+    "resolve_concurrency",
+    "auto_concurrency",
+    "available_cores",
+    "current_policy",
+    "default_policy",
+    "use_policy",
+    "POLICY_AUTO",
+    "POLICY_CORES",
+    "POLICY_SERIAL",
+    "BACKEND_THREAD",
+    "BACKEND_PROCESS",
+    "BACKEND_SERIAL",
+    "ERROR_RAISE_FIRST",
+    "ERROR_COLLECT",
+    "DEFAULT_MAX_CONCURRENCY",
     # configuration / introspection
     "ChunkingOptions",
     "DEFAULT_LIMIT",

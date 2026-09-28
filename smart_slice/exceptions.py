@@ -37,6 +37,17 @@ class SliceError(Exception):
     def __str__(self) -> str:
         return self.message
 
+    def __reduce__(self):
+        """Rebuild as ``SliceError(code, message)`` when unpickled.
+
+        ``Exception.__reduce__`` replays ``self.args``, which here is only
+        ``(message,)`` - so the default behaviour loses ``code`` and raises a
+        ``TypeError`` on reconstruction.  That matters for
+        ``backend="process"``: a slicing failure has to survive the trip back
+        from the child process as the same error type with the same code.
+        """
+        return (self.__class__, (self.code, self.message))
+
 
 class UnsupportedFormatError(SliceError):
     """No handler supports the input, or the bytes are not what the extension claims."""
@@ -46,6 +57,10 @@ class UnsupportedFormatError(SliceError):
     def __init__(self, message: Any, code: int = 400):
         super().__init__(code, message)
 
+    def __reduce__(self):
+        # this subclass takes (message, code), not the base (code, message)
+        return (self.__class__, (self.message, self.code))
+
 
 class ParseError(SliceError):
     """A handler matched the input but failed to extract usable content."""
@@ -54,6 +69,9 @@ class ParseError(SliceError):
 
     def __init__(self, message: Any, code: int = 500):
         super().__init__(code, message)
+
+    def __reduce__(self):
+        return (self.__class__, (self.message, self.code))
 
 
 class ResourceLimitError(RuntimeError):

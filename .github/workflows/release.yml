@@ -22,6 +22,9 @@
 
 name: release
 
+env:
+  PKG_NAME: smart-slice
+
 on:
   push:
     tags:
@@ -134,11 +137,44 @@ jobs:
       - name: Check distributions before upload
         run: python -m twine check dist/*
 
+      # This workflow is triggered by both a v* tag push and a published Release,
+      # so releasing a tag through the GitHub UI fires it twice. Without this
+      # guard the second run fails with "File already exists" and leaves a red X
+      # on an otherwise successful release. The version is read from the built
+      # wheel, not from the tag, so the check cannot drift from the artefacts.
+      - name: Skip if this version is already on PyPI
+        id: pypi_state
+        run: |
+          version=$(python - <<'PY'
+          import glob, os, re
+          for path in glob.glob(os.path.join("dist", "*.whl")):
+              match = re.match(r"^[^-]+-([^-]+)-", os.path.basename(path))
+              if match:
+                  print(match.group(1))
+                  break
+          PY
+          )
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://pypi.org/pypi/${{ env.PKG_NAME }}/$version/json")
+          if [ "$code" = "200" ]; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "smart-slice $version is already on PyPI - nothing to upload."
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "smart-slice $version not on PyPI (HTTP $code) - will publish."
+          fi
+
       - name: Publish to PyPI
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) && steps.pypi_state.outputs.already_published != 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           print-hash: true
+          skip-existing: true
+
+      - name: Already published (no-op)
+        if: ${{ steps.pypi_state.outputs.already_published == 'true' }}
+        run: echo "Version ${{ steps.pypi_state.outputs.version }} is already on PyPI; skipping the upload."
 
       - name: Dry run (no upload)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}

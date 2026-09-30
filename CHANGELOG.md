@@ -5,6 +5,65 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-09-30
+
+Benchmark documentation and tooling only - **no library behaviour changes**. The
+`smart_slice` package is byte-identical to 0.5.0 apart from the version string.
+
+### Added
+
+- **`scripts/benchmark_chroma.py` + `docs/benchmark_chroma.json`** - a one-off,
+  archived run of the only authoritative public chunking benchmark: the framework
+  published with the Chroma Technical Report *Evaluating Chunking Strategies for
+  Retrieval* (Smith & Troynikov, 2024), package `chunking_evaluation` (MIT). Real
+  data, not a synthetic corpus: 5 shipped corpora (1.45 MB), **472 questions with
+  ground-truth reference spans**, recall / precision / IoU / `precision_omega`, and
+  the frozen query embeddings that ship with the package. 26 method configurations
+  scored, including smart-slice at four budgets, a merge-to-token-budget variant,
+  the report's `FixedTokenChunker` / `RecursiveTokenChunker` /
+  `ClusterSemanticChunker`, and `langchain` / `chonkie` adapters.
+- **An oracle self-test in that script.** Before any method is reported it chunks
+  the corpora into exactly the ground-truth spans and verifies the harness can find
+  them: 790 references, exact 695, trailing-period 95, **mislocated 0**. If the
+  oracle fails the script aborts rather than printing numbers.
+- **A verbatim-tiling adapter.** The harness locates every chunk by searching for it
+  in the source, which `slice_text` output is not (headings move into `title`). The
+  adapter re-walks the paragraph bodies and emits spans that concatenate back to the
+  source *exactly* - asserted with `"".join(chunks) == text` - so smart-slice can be
+  scored without weakening its fidelity guarantee.
+
+### Changed
+
+- **`docs/BENCHMARK.md` restructured to lead with throughput**, which is the axis
+  this library can actually move, and to state up front that retrieval recall is
+  **not** a project KPI: scoring it needs an embedding model and a labelled query
+  set, so the number says as much about the model as about the chunker. The Chroma
+  run moved to a clearly-labelled archived section with its conclusion stated
+  plainly - nothing dominates, plain fixed-size chunking at ~200 tokens led on
+  recall (0.7806), smart-slice is mid-pack and size-competitive rather than ahead,
+  HNSW retrieval noise is ~+-0.005, and the oracle ceiling on this dataset is
+  0.8179.
+- README / README_CN: the performance claim now leads with the release-over-release
+  speed evidence (394 ms -> 124 ms, ~3.1x from 0.1.0 to 0.5.0, every step asserted
+  output-identical, plus 1.61x from the batch scheduler on 48 docs / 26.5 MB) and
+  points at the archived retrieval run as context rather than as a claim.
+
+### Notes
+
+- Two honest costs recorded for anyone re-running the Chroma benchmark:
+  `ClusterSemanticChunker(max=400)` **did not terminate** (18 h wall clock, 6.1 h
+  CPU, 775 MB RSS) and was killed, so only its `max=200` row is reported; and the
+  harness's `RecursiveTokenChunker` inherits `length_function=len`, so its
+  `chunk_size` is characters despite the class name.
+- `sentence-transformers` (hence torch) could not be installed on the machine used -
+  an application-control policy blocks `torch_python.dll` - so chromadb's ONNX
+  `all-MiniLM-L6-v2` was substituted. The substitution was verified rather than
+  assumed: cosine **1.000000** against the shipped frozen query embeddings (worst of
+  40 sampled questions), which is why the frozen 384-d set could be reused as-is.
+- The Meta-Chunking benchmarks (CRUD, LongBench, MultiHop-RAG, RAG-Bench) were
+  assessed and not run: that harness scores end-to-end RAG answers through an LLM
+  over datasets distributed on Google Drive, which measures answer quality rather
+  than chunking.
 ## [0.5.0] - 2026-09-28
 
 Two themes: **multimodal** - the pictures come out of the document and land next
@@ -399,6 +458,7 @@ web-framework coupling is removed.
   install the `ocr` extra to enable it.
 - Licensed under GPL-3.0, matching the upstream platform.
 
+[0.5.1]: https://github.com/guangxiangdebizi/smart-slice/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/guangxiangdebizi/smart-slice/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/guangxiangdebizi/smart-slice/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/guangxiangdebizi/smart-slice/compare/v0.2.0...v0.3.0

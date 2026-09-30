@@ -47,12 +47,20 @@ possibly contain, so provably-empty regex passes are skipped; an optional C
 extension (`pip install smart-slice[accel]`) runs that scan natively. Numbers and
 the reasoning are in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
-That is *not* the fastest splitter in this space: a plain character splitter runs
-~36x faster. What the extra time buys - and when it is worth paying - is measured
-against `chonkie` and `langchain-text-splitters` on the same corpus in
-[`docs/BENCHMARK.md`](docs/BENCHMARK.md). Short version: `smart-slice` is the only
-row that keeps every natural unit intact, carries its heading chain, never cuts a
-code fence and never orphans a table row from its header.
+Speed is the KPI, and it is tracked release over release: **394 ms -> 124 ms
+(~3.1x) from 0.1.0 to 0.5.0** on the same corpus, every step asserted
+output-identical, with the batch scheduler adding a further 1.61x on a 48-document
+/ 26.5 MB corpus. [`docs/BENCHMARK.md`](docs/BENCHMARK.md) has the per-change
+breakdown, the peer throughput comparison, and what did *not* help.
+
+Throughput is not the only axis, and on that one `smart-slice` is honestly beaten:
+a plain character splitter runs ~36x faster. What the extra time buys is measured
+against `chonkie` and `langchain-text-splitters` on the same corpus - `smart-slice`
+is the only row that keeps every natural unit intact, carries its heading chain,
+never cuts a code fence and never orphans a table row from its header. Retrieval
+recall is deliberately **not** a KPI here: it needs an embedding model and a
+labelled query set, so one archived run against the Chroma benchmark is recorded in
+`docs/BENCHMARK.md` section 4 with its limitations stated, and is not repeated.
 
 ### 4. No framework
 
@@ -669,9 +677,9 @@ pip install -e ".[dev]"
 pytest                                   # 415 tests, all offline
 ruff check smart_slice tests
 
-python scripts/benchmark.py              # reproduce docs/PERFORMANCE.md
+python scripts/benchmark.py              # throughput + profile + batch scaling
 pip install chonkie langchain-text-splitters tiktoken
-python scripts/benchmark_peers.py        # reproduce docs/BENCHMARK.md
+python scripts/benchmark_peers.py        # peer throughput + structure comparison
 ```
 
 ---

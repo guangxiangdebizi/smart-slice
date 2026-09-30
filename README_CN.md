@@ -45,7 +45,9 @@ paragraphs = slice_text("# 章节\n\n正文内容", limit=1000)
 
 551 KB 结构化文档切片约 125 ms（≈4.4 MB/s）。热路径为单遍线性扫描判定块内可能存在的标题层级，跳过必然为空的正则扫描；可选 C 扩展（`pip install smart-slice[accel]`）原生执行该扫描。数据与推理见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)。
 
-该速度并非同类最快：纯字符切分器快约 36 倍。多出的时间换来了什么、何种场景值得付出，已在同一语料上与 `chonkie`、`langchain-text-splitters` 横向实测，见 [`docs/BENCHMARK.md`](docs/BENCHMARK.md)。结论摘要：smart-slice 是榜单中唯一在全部结构指标上取满分的实现——自然段落单元零破坏、标题链随行、代码围栏零切断、表格数据行与表头零分离。
+速率是本项目的核心指标，且逐版本跟踪：同一语料上 **0.1.0 的 394 ms → 0.5.0 的 124 ms（约 3.1 倍）**，每一步改动均断言输出逐字节不变；批量调度在 48 篇 / 26.5 MB 语料上再叠加 1.61 倍。逐项来源、以及"试过但没用"的改动见 [`docs/BENCHMARK.md`](docs/BENCHMARK.md)。
+
+吞吐并非唯一维度，且该维度上 smart-slice 确实落后：纯字符切分器快约 36 倍。多出的时间换来了什么，已在同一语料上与 `chonkie`、`langchain-text-splitters` 横向实测——smart-slice 是榜单中唯一在全部结构指标上取满分的实现：自然段落单元零破坏、标题链随行、代码围栏零切断、表格数据行与表头零分离。**检索召回率刻意不作为本项目指标**：它需要 embedding 模型与标注查询集，结论对模型的依赖不低于对切分器的依赖；针对 Chroma 权威 benchmark 的一次性实测已归档于 `docs/BENCHMARK.md` 第 4 节并如实标注局限，不再重复。
 
 ### 四、无框架依赖
 
@@ -587,9 +589,9 @@ pip install -e ".[dev]"
 pytest                                   # 415 项测试，全离线
 ruff check smart_slice tests
 
-python scripts/benchmark.py              # 复现 docs/PERFORMANCE.md
+python scripts/benchmark.py              # 吞吐 + 剖面 + 批量扩展性
 pip install chonkie langchain-text-splitters tiktoken
-python scripts/benchmark_peers.py        # 复现 docs/BENCHMARK.md
+python scripts/benchmark_peers.py        # 同类库吞吐与结构对比
 ```
 
 ---

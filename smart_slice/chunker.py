@@ -519,6 +519,44 @@ def _protect_table_row(content: str, start: int, best_split: int) -> int:
     return best_split
 
 
+# A markdown image reference, e.g. ![alt](./oss/file/{uuid}). Same shape the downstream
+# OCR-injection matcher uses; alt text and url cannot contain their own delimiters.
+IMAGE_REF_PATTERN = re.compile(r'!\[[^\]]*\]\([^)]*\)')
+
+# How far past the split point to keep scanning for a straddling reference. Reference length
+# is unbounded in principle (alt text is arbitrary), so a finite window keeps the per-chunk
+# cost at O(limit + window) instead of degrading into a full-text scan per chunk. A reference
+# longer than the window is not protected and is hard-cut as before.
+IMAGE_REF_MAX_SCAN = 1024
+
+
+def _protect_image_ref(content: str, start: int, best_split: int) -> int:
+    """Never split a markdown image reference in half.
+
+    BUGFIX 2026-10-10: a reference such as ![alt](./oss/file/{id}) contains '.' and '!', both
+    of which are sentence boundaries, so a cut can land inside it. Downstream id rewriting and
+    OCR injection both match on the *complete* reference, so a broken one fails silently and
+    shows up as a 404 image.
+
+    Only well-formed references that genuinely straddle the split point are handled: an
+    unterminated '![' is common in code blocks and regular expressions (shell's ![ -f x ],
+    C's a![i], a negative lookahead (?![0-9])), and matching on the bare substring made
+    chunk boundaries drift pointlessly in 23 of 28 such sampled combinations.
+
+    When the reference already starts at the chunk start we do not back off, so the cursor
+    always advances.
+    """
+    scan_end = min(len(content), best_split + IMAGE_REF_MAX_SCAN)
+    for match in IMAGE_REF_PATTERN.finditer(content, start, scan_end):
+        if match.start() >= best_split:
+            break  # later references belong to the next chunk
+        if match.end() > best_split:
+            if match.start() > start:
+                return match.start()
+            break
+    return best_split
+
+
 def _snap_overlap_start(content: str, raw_start: int, hard_limit: int) -> int:
     """把重叠起点前移到最近的行首/句首，使携带的上下文不从半个词开始。
 
@@ -603,6 +641,7 @@ def smart_split_paragraph(content: str, limit: int, overlap: int = 0, *,
 
         best_split = _find_sentence_cut(content, start, end, start + int(limit * lookback)) if boundary else end
         best_split = _protect_table_row(content, start, best_split)
+        best_split = _protect_image_ref(content, start, best_split)
 
         result.append(content[start:best_split])
 

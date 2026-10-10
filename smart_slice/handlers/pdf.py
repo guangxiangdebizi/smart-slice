@@ -44,6 +44,14 @@ default_pattern_list = [
 ]
 
 
+# Search window (in characters) for the fallback heading key.
+# A numbered heading is specific enough to be located anywhere on the page; the
+# numbering-stripped fallback key is usually a high-frequency body word, so it is
+# only allowed to match near the top of the page. Letting it match deep in the
+# body would hand the cut position over to ordinary prose.
+HEADING_FALLBACK_WINDOW = 200
+
+
 def check_links_in_pdf(doc):
     for page in doc.pages:
         if PdfSplitHandle.get_internal_links(doc, page):
@@ -309,7 +317,11 @@ class PdfSplitHandle(BaseSplitHandle):
                 continue
 
             page_number = PdfSplitHandle.get_destination_page_number(doc, item)
-            if page_number is None:
+            # BUGFIX 2026-10-10: a /Dest page number can be out of range (merged PDFs and
+            # OCR-generated outlines both do this). Only None used to be skipped, so an
+            # out-of-range number made doc.pages[page_number] raise IndexError, which the
+            # caller turned into "failed to parse" - one bad bookmark lost the whole file.
+            if page_number is None or not 0 <= page_number < len(doc.pages):
                 continue
 
             title = getattr(item, "title", None)
@@ -318,6 +330,53 @@ class PdfSplitHandle(BaseSplitHandle):
             if title is None:
                 title = str(item)
             toc.append((level, str(title).replace("\0", ""), page_number))
+
+    @staticmethod
+    def _locate_heading(text, candidates):
+        """Locate a chapter heading in one page of text.
+
+        @param candidates: search keys ordered by specificity (numbered heading first,
+                           numbering-stripped heading as fallback); empty keys are skipped.
+        @param text:       the page text **before** newline erasure.
+        @return: (start, end) offsets of the heading, or (-1, -1) when not located.
+
+        A hit is only accepted when it is anchored: at offset 0, or preceded by whitespace
+        (space / tab / CR / LF / ideographic space). A heading occupies its own line in PDF
+        text extraction, so anchoring holds for real headings, while the same word inside
+        prose, a running header or a footer is normally glued to other characters and is
+        rejected. Duplicating a heading line into the body is visible and harmless; cutting
+        a whole page of body text is silent and unrecoverable, so the trade is deliberate.
+        """
+        for candidate in candidates:
+            if not candidate:
+                continue
+            search_from = 0
+            while True:
+                idx = text.find(candidate, search_from)
+                if idx < 0:
+                    break
+                if idx == 0 or text[idx - 1] in " \t\r\n\u3000":
+                    return idx, idx + len(candidate)
+                search_from = idx + 1
+        return -1, -1
+
+    @staticmethod
+    def _toc_page_owners(toc, page_count):
+        """Map each page to the outline entry that owns it: the last one covering it.
+
+        A page is routinely covered by both a parent bookmark and its first child (a chapter
+        opener carries the chapter heading and the first subsection heading on the same page).
+        Uses the same interval rule as the handle_toc loop (end_page = next entry start - 1,
+        last entry runs to the end of the document, clamped to start_page) so ownership and
+        traversal cannot disagree.
+        """
+        owners = {}
+        for i, (_level, _title, start_page) in enumerate(toc):
+            end_page = toc[i + 1][2] - 1 if i + 1 < len(toc) else page_count - 1
+            end_page = max(start_page, min(end_page, page_count - 1))
+            for page_num in range(start_page, end_page + 1):
+                owners[page_num] = i
+        return owners
 
     @staticmethod
     def handle_toc(doc, limit, progress_hook=None, image_list=None):
@@ -334,19 +393,26 @@ class PdfSplitHandle(BaseSplitHandle):
         # ancestor stack keyed on level and emit " ".join(chain), which matches the
         # " ".join(parent_chain) convention used by chunker.result_tree_to_paragraph.
         ancestors = []  # [(level, title)]
-        # BUGFIX 2026-10-10: dedupe image extraction per page - a parent entry and its first
-        # child can cover the same page, and extract_page_images mints a fresh uuid7 per call
-        # so its own id-based guard can never fire.
+        # BUGFIX 2026-10-10: the bookmark path never extracted images, so any PDF carrying
+        # an outline lost every illustration. imaged_pages makes sure a page is decoded once.
         imaged_pages = set()
+        # BUGFIX 2026-10-10 (post-review): attaching a page image to the *first* entry that
+        # covers the page put it in the parent bookmark's chunk, which after trimming often
+        # holds nothing but its title, while the subsection that actually discusses the figure
+        # got no image at all - and inject_image_ocr_text then wrote the OCR text into that
+        # empty shell. Ownership now goes to the *last* entry covering the page (the deepest,
+        # most specific one). Duplicate File rows are already collapsed downstream by sha256,
+        # so this dedupe exists only to avoid decoding a page twice.
+        page_owner = PdfSplitHandle._toc_page_owners(toc, len(doc.pages))
 
         # 遍历目录并按章节提取文本
         for i, entry in enumerate(toc):
             if progress_hook is not None:
                 progress_hook()  # 逐章提取文本，按章上报进展（防超大 PDF 逐章解析被误判零进展）
-            level, title, start_page = entry
+            level, raw_title, start_page = entry
             while ancestors and ancestors[-1][0] >= level:
                 ancestors.pop()
-            ancestors.append((level, title))
+            ancestors.append((level, raw_title))
             chapter_title = " ".join(t for _lv, t in ancestors if t and t.strip())
             # 确定结束页码，如果是最后一个章节则到文档末尾
             if i + 1 < len(toc):
@@ -355,34 +421,56 @@ class PdfSplitHandle(BaseSplitHandle):
                 end_page = len(doc.pages) - 1
             end_page = max(start_page, end_page)
 
-            # 去掉标题中的符号
-            title = PdfSplitHandle.handle_chapter_title(title)
+            # Heading search keys: the numbered original first (specific), the
+            # numbering-stripped form only as a fallback.
+            stripped_title = PdfSplitHandle.handle_chapter_title(raw_title)
+            # BUGFIX 2026-10-10 (post-review): the tail cut uses the numbered original only.
+            # The next heading is essentially always rendered with its number, whereas the
+            # stripped short key also matches prose that merely mentions the next section
+            # ("read the Commissioning section first"); a false tail hit discards the rest of
+            # the page and no other chunk ever recovers it. Under-trimming only duplicates
+            # the next section's text, which is visible and harmless.
+            next_keys = (toc[i + 1][1],) if i + 1 < len(toc) else ()
 
             # 提取该章节的文本内容
             chapter_text = ""
             for page_num in range(start_page, end_page + 1):
                 text = PdfSplitHandle.extract_page_text(doc.pages[page_num])
+
+                # BUGFIX 2026-10-10 (post-review): trim the head on the chapter's first page
+                # only, the tail on its last page only, require an anchored hit, and locate
+                # before the newline erasure below. The previous code ran an unanchored
+                # text.find(stripped_short_title) on *every* page of the interval, and once
+                # numbering was stripped the key became an ordinary body word ("4 Requirements"
+                # -> "Requirements"), so a hit inside a running header, a footer or plain prose
+                # silently deleted the whole page (measured: a chapter kept 4.1% of its body).
+                # The deleted text appeared in no chunk at all, with no log and no exception.
+                if page_num == start_page:
+                    _head_start, head_end = PdfSplitHandle._locate_heading(text, (raw_title,))
+                    if head_end < 0 and stripped_title and stripped_title != raw_title:
+                        _head_start, head_end = PdfSplitHandle._locate_heading(
+                            text[:HEADING_FALLBACK_WINDOW], (stripped_title,)
+                        )
+                    if head_end > -1:
+                        text = text[head_end:]
+                if next_keys and page_num == end_page:
+                    tail_start, _tail_end = PdfSplitHandle._locate_heading(text, next_keys)
+                    if tail_start > -1:
+                        text = text[:tail_start]
+
                 text = re.sub(r"(?<!。)\n+", "", text)
                 text = re.sub(r"(?<!.)\n+", "", text)
 
-                idx = text.find(title) if title else -1
-                if idx > -1:
-                    text = text[idx + len(title) :]
-
-                if i + 1 < len(toc):
-                    _level, next_title, next_start_page = toc[i + 1]
-                    next_title = PdfSplitHandle.handle_chapter_title(next_title)
-                    idx = text.find(next_title) if next_title else -1
-                    if idx > -1:
-                        text = text[:idx]
-
                 chapter_text += text  # 提取文本
 
-                # BUGFIX 2026-10-10: the bookmark path never extracted images, so any PDF
-                # carrying an outline lost every illustration. Mirror handle_pdf_content:
-                # append the page images as markdown references after that page text.
-                if image_list is not None and page_num not in imaged_pages:
+                # BUGFIX 2026-10-10: append this page's illustrations as markdown references.
+                # Coverage is limited to the bookmarked page range - pages before the first
+                # bookmark (cover, foreword) are not included; that loss pre-dates this change
+                # and is tracked separately.
+                if image_list is not None and page_owner.get(page_num) == i and page_num not in imaged_pages:
                     imaged_pages.add(page_num)
+                    if progress_hook is not None:
+                        progress_hook()  # image decode + PNG re-encode cost seconds per page
                     images_md = PdfSplitHandle.extract_page_images(doc.pages[page_num], image_list)
                     if images_md:
                         chapter_text += images_md + "\n\n"
@@ -461,24 +549,33 @@ class PdfSplitHandle(BaseSplitHandle):
 
                 # 提取章节内容
                 chapter_text = ""
-                for p_num in range(start_page, min(end_page, len(doc.pages) - 1) + 1):
+                last_page = min(end_page, len(doc.pages) - 1)
+                for p_num in range(start_page, last_page + 1):
                     text = PdfSplitHandle.extract_page_text(doc.pages[p_num])
+
+                    # BUGFIX 2026-10-10 (post-review): same discipline as handle_toc - head on
+                    # the first page, tail on the last page, anchored, before newline erasure.
+                    # Titles on this path come from extract_link_title / extract_first_line and
+                    # their value is unchanged here (known defect: both delete every period, so
+                    # "3.2 Debugging" becomes "32 Debugging"; tracked separately).
+                    if p_num == start_page:
+                        _head_start, head_end = PdfSplitHandle._locate_heading(text, (link_title,))
+                        if head_end > -1:
+                            text = text[head_end:]
+                    if next_link_title is not None and p_num == last_page:
+                        tail_start, _tail_end = PdfSplitHandle._locate_heading(text, (next_link_title,))
+                        if tail_start > -1:
+                            text = text[:tail_start]
+
                     text = re.sub(r"(?<!。)\n+", "", text)
                     text = re.sub(r"(?<!.)\n+", "", text)
-
-                    idx = text.find(link_title) if link_title else -1
-                    if idx > -1:
-                        text = text[idx + len(link_title) :]
-
-                    if next_link_title is not None:
-                        idx = text.find(next_link_title) if next_link_title else -1
-                        if idx > -1:
-                            text = text[:idx]
                     chapter_text += text
 
                     # BUGFIX 2026-10-10: recover illustrations on the internal-link path.
                     if image_list is not None and p_num not in imaged_pages:
                         imaged_pages.add(p_num)
+                        if progress_hook is not None:
+                            progress_hook()  # image decode costs seconds per page
                         images_md = PdfSplitHandle.extract_page_images(doc.pages[p_num], image_list)
                         if images_md:
                             chapter_text += images_md + "\n\n"
@@ -640,15 +737,46 @@ class PdfSplitHandle(BaseSplitHandle):
         title = title.replace("\0", "")
         title = re.sub(r"[一二三四五六七八九十\s*]、\s*", "", title)
         title = re.sub(r"第[一二三四五六七八九十]章\s*", "", title)
-        # BUGFIX 2026-10-10: only CJK-style numbering was stripped. Arabic multi-level
-        # numbering ("3.2.1 Creating a datum plane") survived, so once the newline erasure
-        # above had glued the number to the heading text, text.find(title) frequently missed
-        # and the chapter body was never trimmed (the previous section tail leaked in).
-        # Only adopt the stripped form when something is left, so a purely numeric bookmark
-        # title can never degrade into an empty search key.
-        _arabic = re.sub(r"^\s*\d+(?:[.\-．]\d+)*[.\-．、)）]?\s*", "", title)
-        if _arabic.strip():
-            title = _arabic
+        # BUGFIX 2026-10-10: only CJK-style numbering was stripped; Arabic multi-level
+        # numbering ("3.2.1 Creating a datum plane") survived and the fallback search key
+        # missed the page text.
+        # TIGHTENED 2026-10-10 (post-review): strip *numbering*, never "a title that happens
+        # to start with a digit". The first version made the trailing separator and the
+        # whitespace optional, which rewrote "1.5 m clearance" / "5G network" / "3M tape" /
+        # "2024 annual report" / "Chapter 2 3D printing" into "m clearance" / "G network" /
+        # "M tape" / "annual report" / "D printing" - keys that locate nothing and are
+        # themselves crippled. See _strip_arabic_numbering for the rule.
+        return PdfSplitHandle._strip_arabic_numbering(title)
+
+    @staticmethod
+    def _strip_arabic_numbering(title):
+        """Strip Arabic numbering; return the title unchanged when the shape is ambiguous.
+
+        Stripped: multi-level numbering followed by whitespace or end of string
+                  ("3.2.1 Creating a datum plane", "2-1 Assembly drawing",
+                  "2026.10.10 Change log"), and single-level numbering carrying an explicit
+                  trailing separator ("10. Precautions", "1)Installation", "3、Maintenance",
+                  "1.Overview").
+        Kept:     bare integer + whitespace ("4 Requirements", "01 Overview") - indistinguishable
+                  from quantity phrases ("Station 8", "12 inch wafer", "100 mL flask"); and
+                  "1.5 m clearance", "3.14 pi", "5G network", "3M tape", "2024 annual report",
+                  "ISO 9001 requirements".
+
+        Rationale: the result is only ever a *fallback* search key (the numbered original is
+        tried first, see _locate_heading). Not stripping merely leaves the heading text inside
+        the body, which is visible and harmless; over-stripping can degrade the fallback key
+        into a high-frequency body word, which - if the anchoring constraint ever fails -
+        silently deletes a whole page.
+        """
+        matched = re.match(r"\s*\d+(?:[.\-．]\d+)*[.\-．、)）]?", title)
+        if not matched:
+            return title
+        numbering = matched.group(0).strip()
+        rest = title[matched.end() :]
+        if numbering[-1] in ".-．、)）":
+            return rest.strip()
+        if re.search(r"[.\-．]\d", numbering) and (not rest or rest[0].isspace()):
+            return rest.strip()
         return title
 
     def support(self, file, get_buffer):

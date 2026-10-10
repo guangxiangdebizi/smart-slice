@@ -5,6 +5,145 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-10-10
+
+Corrects three defects **introduced or exposed by 0.6.0**, found by an adversarial
+review (four independent red teams, mutually exclusive attack surfaces) and
+reproduced with measured evidence. 0.6.0's own four fixes stay; two of them were
+wrong in ways that lost data. If you slice bookmarked PDFs, upgrade from 0.6.0 -
+the failure mode is silent.
+
+### Fixed
+
+- **Chapter trimming could silently delete a whole page of body text** (regression
+  from 0.6.0). `handle_toc` ran an unanchored `text.find(stripped_title)` on
+  *every* page of a chapter's interval. 0.6.0 added Arabic-numbering stripping,
+  which shortened the key from `"4 Requirements"` to `"Requirements"` - an
+  ordinary body word in Chinese technical writing (`概述` / `范围` / `要求` /
+  `安装` / `维护` / `注意事项` all recur in prose, running headers and footers).
+  A hit anywhere on the page cut everything before it (`text[idx + len:]`) or
+  after it (`text[:idx]`), and the removed text appeared in no chunk at all, with
+  no log, no exception and no length check. Measured on real fixtures: a GB/T-style
+  `4 要求` chapter kept **4.1%** of its body (40 of 40 specification items lost);
+  a chapter whose body said "read the Commissioning section first" lost
+  `Warning: must be earthed`; a manual with the section name in its running header
+  went from 37 characters of body to 2.
+  Chapter location is now: **anchored** (a hit counts only at offset 0 or when
+  preceded by whitespace, so a word inside prose is rejected), **page-scoped**
+  (head trim on the chapter's first page only, tail trim on its last page only),
+  **run before the newline erasure** (erasure removes every newline except after
+  `。`, so headings are no longer at line starts afterwards and anchoring would
+  be meaningless), and **specificity-ordered** (the numbered original is tried
+  first; the stripped form is a fallback confined to a 200-character window at the
+  top of the page). The tail cut uses the numbered original only - a next section
+  is essentially always rendered with its number, while the stripped short key also
+  matches prose that merely mentions it, and a false tail hit is unrecoverable.
+  Under-trimming now only duplicates the next section's text, which is visible.
+- **Arabic numbering stripping was too wide** (regression from 0.6.0). The
+  trailing separator and the whitespace were both optional, so any title starting
+  with a digit lost it: `1.5米以内` -> `米以内`, `5G 网络` -> `G 网络`,
+  `3M 胶带` -> `M 胶带`, `2024年度报告` -> `年度报告`, and - with the CJK rule
+  stacking on top - `第二章 3D 打印` -> `D 打印`. Only unambiguous numbering is
+  stripped now: multi-level numbering followed by whitespace or end of string
+  (`3.2.1 …`, `2-1 …`, `2026.10.10 …`), or single-level numbering with an explicit
+  trailing separator (`10. …`, `1)…`, `3、…`, `1.…`). A bare integer plus
+  whitespace (`4 要求`, `01 概述`) is deliberately left alone: it is
+  indistinguishable from a quantity phrase (`8 号工位`, `12 inch wafer`,
+  `100 mL flask`). See `_strip_arabic_numbering`.
+- **A page illustration was attached to the wrong chunk** (regression from 0.6.0).
+  0.6.0 deduped images per page and gave the page to the *first* outline entry
+  covering it. Bookmarks are parent-first, and a chapter opener shares its page
+  with its first subsection, so the image landed in the parent chunk - which after
+  trimming often holds nothing but its title (measured: 11 characters) - while the
+  subsection that actually discusses the figure (77 characters) got none. Any
+  downstream OCR injection then wrote its text into that empty shell. Ownership now
+  goes to the **last** entry covering the page (the deepest, most specific one),
+  precomputed by `_toc_page_owners` with the same interval rule the traversal uses.
+  Per-page dedupe is kept only to avoid decoding a page twice; duplicate assets
+  were already collapsed by content hash downstream, so the dedupe never saved a
+  row.
+- **Image markdown references were cut in half by the chunker.** `![alt](./oss/file/{id})`
+  contains `.` and `!`, both of which are sentence boundaries in
+  `smart_split_paragraph`, so a cut could land inside the reference. Downstream id
+  rewriting and OCR injection both match on the *complete* reference, so a broken
+  one failed silently and surfaced as a 404 image. Scanning 1372 reference
+  positions, 42 were cut at `limit=1000`. `smart_split_paragraph` now backs the cut
+  off to just before a reference that genuinely straddles it. The match is on
+  well-formed references only: an unterminated `![` is common in code blocks and
+  regular expressions (shell's `![ -f x ]`, C's `a![i]`, a negative lookahead
+  `(?![0-9])`), and matching the bare substring moved cut points in 23 of 28 such
+  sampled combinations for no reason. This also fixes the no-outline path, which
+  has emitted image references since 0.5.0.
+- **One bad bookmark cost the whole document.** A `/Dest` page number out of range
+  (merged PDFs and OCR-generated outlines both produce these) made
+  `doc.pages[page_number]` raise `IndexError`, which the caller reported as a
+  generic parse failure. `collect_toc` now skips out-of-range destinations.
+- **Image extraction reported no progress.** Decoding and PNG re-encoding cost
+  seconds per page, but 0.6.0 added the call inside the page loop without a
+  `progress_hook`, so a large bookmarked PDF could look stalled to a watchdog.
+
+### Changed
+
+- `tests/test_pdf_outline.py`: 10 -> 32 tests. The 0.6.0 image assertions counted
+  occurrences of source text and inspected `co_varnames`; a mutation moving
+  `imaged_pages` from function scope into the loop (which disables the per-page
+  dedupe) passed every one of them, and so did reversing the 256-character
+  truncation direction. They are gone. The suite now runs the real code against
+  multi-line pages and real DCTDecode image XObjects, and **all 12 mutations of the
+  fixes are detected** (anchoring, head/tail page scoping, the fallback window, the
+  tail key, the empty-key guard, image ownership, the numbering rule, the progress
+  hook, the page bound, the ancestor stack scope, the reference protection).
+- `smart_split_paragraph` gained module-level `IMAGE_REF_PATTERN` and
+  `IMAGE_REF_MAX_SCAN` (1024). The scan window keeps the per-chunk cost at
+  `O(limit + window)`; a reference longer than the window is not protected and is
+  hard-cut as before.
+
+### Verified
+
+- Full offline suite green; `ruff check` clean.
+- Mutation testing: 12 of 12 detected; sources restored byte-identical afterwards.
+- Differential vs 0.6.0 on 1008 combinations (13 hand-written corpora plus 50 random
+  ones x 4 limits x 4 overlap settings, none containing an image reference):
+  output **byte-identical** (`diff=0`), so the chunker change is inert outside real
+  image references. Table-row protection and the "concatenation loses nothing"
+  invariant re-checked.
+- Image references: 42 of 1372 positions cut before, 0 after, characters conserved,
+  and an over-long reference does not hang the loop.
+
+### Known issues (not addressed here, measured during the review)
+
+- **A chunk's `title` may not reach the vector index.** The slicing SQL emits
+  `concat_ws('\n', title, content) AS text` alongside `chunks`, but the vector layer
+  prefers `chunks` whenever it is non-empty, and every write path fills `chunks`
+  from `content` alone. The 0.6.0 ancestor chain therefore improves the reranker
+  input, the generation prompt and AI question generation - not recall. The 0.6.0
+  claim that it "directly affects title disambiguation at retrieval time" was too
+  broad and is corrected here.
+- Newline erasure (`re.sub(r"(?<!。)\n+", "", …)` and the line after it) removes
+  every newline except one after `。`, which destroys table, list, code-block and
+  step structure on the bookmark path; measured retention 0%-13.3% of newline groups.
+- Pages before the first bookmark (cover, foreword, safety notices) are never
+  covered: their text and their illustrations are both lost. `handle_links` has a
+  pre-TOC branch; `handle_toc` has none. 0.6.0's claim that image extraction now
+  "mirrors `handle_pdf_content`" was wrong for this reason and is corrected here.
+- `with_filter` and a caller-supplied `pattern_list` are silently ignored on the
+  bookmark path (`handle_toc` takes neither, and `handle()` returns before
+  constructing a `SplitModel`).
+- A scanned PDF (empty text layer) with OCR-generated bookmarks imports
+  "successfully" and yields one shell chunk per bookmark whose `content` equals its
+  `title`; the "image-only/scanned PDF" guard sits on a branch this path never
+  reaches.
+- On the internal-link path, `extract_link_title` / `extract_first_line` delete
+  every period (`3.2 Debugging` -> `32 Debugging`), which corrupts stored titles
+  and makes location always miss; that path also never calls `handle_chapter_title`.
+- The font-size-mode heading heuristic in `handle_pdf_content` over-generates
+  headings badly (published benchmark: precision 0.0749, F1 0.1089, 6.68% of corpus
+  characters marked as headings). Independently re-measured here on 34 PDFs / 950
+  pages: 0.28%-35.07% of characters marked as headings, chunk counts inflated
+  3.6x-35.6x, and up to 85.7% of chunks shorter than 50 characters. It also reaches
+  bookmarked PDFs through `get_content`, which calls `handle_pdf_content`
+  unconditionally.
+
 ## [0.6.0] - 2026-10-10
 
 Bug fixes on the PDF **bookmark (outline) path** - the branch a PDF that has a

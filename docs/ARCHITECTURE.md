@@ -163,6 +163,37 @@ pinned by `tests/test_service.py::OcrInjectionBranchTests`). So a `.zip` of `.do
 files slices each document normally, while a loose image inside it is skipped and
 logged rather than claimed.
 
+### The PDF handler's three paths
+
+`PdfSplitHandle.handle` short-circuits, so *which* path runs determines what the
+handler is able to see at all:
+
+1. **`handle_toc`** - taken as soon as the PDF has an outline whose entries
+   resolve to page numbers. One paragraph group per outline entry, titled with
+   that entry's **ancestor chain** (the levels come from `collect_toc`, joined
+   with a single space as in `chunker.result_tree_to_paragraph`).
+2. **`handle_links`** - taken when there is no usable outline but some page
+   carries an internal `/Link`. Each link becomes a chapter, titled with the
+   link's own text.
+3. **`handle_pdf_content`** - the fallback for a PDF with neither. This is the
+   only path that reads **font sizes**: it takes the modal font size across the
+   document as "body", emits `## ` for a line more than 2 pt larger and `### `
+   for one more than 0.5 pt larger, and is the only path that feeds reconstructed
+   markdown into the heading-tree slicer.
+
+The consequences are easy to miss and worth stating:
+
+- Paths 1 and 2 work from `page.extract_text()` alone - no font size, no
+  coordinates, no per-line geometry. Anything that depends on layout (font-size
+  heuristics, margin bands, mapping a detection box back onto text) has nothing
+  to attach to on those paths.
+- Both erase every newline that does not follow a full stop, so a running head or
+  foot ends up glued into the middle of a sentence instead of sitting on its own
+  line.
+- Neither emits markdown table rows, so `append_table_header_if_cut` never fires
+  for them and a PDF table cut by the length budget gets no header row appended.
+- All three paths extract page images as of 0.6.0; before that only path 3 did.
+
 ### Optional dependencies never break import
 
 Every format parser except `charset-normalizer` is an optional extra, but

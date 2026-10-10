@@ -4,7 +4,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-415%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-425%20passed-brightgreen.svg)]()
 [![PyPI version](https://img.shields.io/pypi/v/smart-slice.svg)](https://pypi.org/project/smart-slice/)
 
 ```python
@@ -586,7 +586,7 @@ except SliceError as e:
 git clone https://github.com/guangxiangdebizi/smart-slice.git
 cd smart-slice
 pip install -e ".[dev]"
-pytest                                   # 415 项测试，全离线
+pytest                                   # 425 项测试，全离线
 ruff check smart_slice tests
 
 python scripts/benchmark.py              # 吞吐 + 剖面 + 批量扩展性

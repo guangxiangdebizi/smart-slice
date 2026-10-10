@@ -93,13 +93,21 @@ class PdfSplitHandle(BaseSplitHandle):
                 if type(with_filter) is str:
                     with_filter = with_filter.lower() == "true"
                 # 处理有目录的pdf
-                result = self.handle_toc(pdf_document, limit, progress_hook=progress_hook)
+                toc_image_list = []
+                result = self.handle_toc(pdf_document, limit, progress_hook=progress_hook,
+                                         image_list=toc_image_list)
                 if result is not None:
+                    if len(toc_image_list) > 0:
+                        save_image(toc_image_list)
                     return {"name": file.name, "content": result}
 
                 # 没目录但是有链接的pdf
-                result = self.handle_links(pdf_document, pattern_list, with_filter, limit, progress_hook=progress_hook)
+                link_image_list = []
+                result = self.handle_links(pdf_document, pattern_list, with_filter, limit,
+                                           progress_hook=progress_hook, image_list=link_image_list)
                 if result is not None and len(result) > 0:
+                    if len(link_image_list) > 0:
+                        save_image(link_image_list)
                     return {"name": file.name, "content": result}
 
                 # 没有目录的pdf
@@ -312,7 +320,7 @@ class PdfSplitHandle(BaseSplitHandle):
             toc.append((level, str(title).replace("\0", ""), page_number))
 
     @staticmethod
-    def handle_toc(doc, limit, progress_hook=None):
+    def handle_toc(doc, limit, progress_hook=None, image_list=None):
         # 找到目录
         toc = PdfSplitHandle.get_toc(doc)
         if toc is None or len(toc) == 0:
@@ -320,13 +328,26 @@ class PdfSplitHandle(BaseSplitHandle):
 
         # 创建存储章节内容的数组
         chapters = []
+        # BUGFIX 2026-10-10: collect_toc already resolves each bookmark level, but the
+        # unpacked level was never used, so every outline entry collapsed to one weight and
+        # a chunk title kept only its leaf heading (the ancestor chain was lost). Keep an
+        # ancestor stack keyed on level and emit " ".join(chain), which matches the
+        # " ".join(parent_chain) convention used by chunker.result_tree_to_paragraph.
+        ancestors = []  # [(level, title)]
+        # BUGFIX 2026-10-10: dedupe image extraction per page - a parent entry and its first
+        # child can cover the same page, and extract_page_images mints a fresh uuid7 per call
+        # so its own id-based guard can never fire.
+        imaged_pages = set()
 
         # 遍历目录并按章节提取文本
         for i, entry in enumerate(toc):
             if progress_hook is not None:
                 progress_hook()  # 逐章提取文本，按章上报进展（防超大 PDF 逐章解析被误判零进展）
             level, title, start_page = entry
-            chapter_title = title
+            while ancestors and ancestors[-1][0] >= level:
+                ancestors.pop()
+            ancestors.append((level, title))
+            chapter_title = " ".join(t for _lv, t in ancestors if t and t.strip())
             # 确定结束页码，如果是最后一个章节则到文档末尾
             if i + 1 < len(toc):
                 end_page = toc[i + 1][2] - 1
@@ -344,18 +365,27 @@ class PdfSplitHandle(BaseSplitHandle):
                 text = re.sub(r"(?<!。)\n+", "", text)
                 text = re.sub(r"(?<!.)\n+", "", text)
 
-                idx = text.find(title)
+                idx = text.find(title) if title else -1
                 if idx > -1:
                     text = text[idx + len(title) :]
 
                 if i + 1 < len(toc):
                     _level, next_title, next_start_page = toc[i + 1]
                     next_title = PdfSplitHandle.handle_chapter_title(next_title)
-                    idx = text.find(next_title)
+                    idx = text.find(next_title) if next_title else -1
                     if idx > -1:
                         text = text[:idx]
 
                 chapter_text += text  # 提取文本
+
+                # BUGFIX 2026-10-10: the bookmark path never extracted images, so any PDF
+                # carrying an outline lost every illustration. Mirror handle_pdf_content:
+                # append the page images as markdown references after that page text.
+                if image_list is not None and page_num not in imaged_pages:
+                    imaged_pages.add(page_num)
+                    images_md = PdfSplitHandle.extract_page_images(doc.pages[page_num], image_list)
+                    if images_md:
+                        chapter_text += images_md + "\n\n"
 
             # Null characters are not allowed.
             chapter_text = chapter_text.replace("\0", "")
@@ -381,12 +411,15 @@ class PdfSplitHandle(BaseSplitHandle):
         return chapters
 
     @staticmethod
-    def handle_links(doc, pattern_list, with_filter, limit, progress_hook=None):
+    def handle_links(doc, pattern_list, with_filter, limit, progress_hook=None, image_list=None):
         # 检查文档是否包含内部链接
         if not check_links_in_pdf(doc):
             return
         # 创建存储章节内容的数组
         chapters = []
+        # BUGFIX 2026-10-10: the internal-link path never extracted images either; see the
+        # matching note in handle_toc. One set per call, keyed on the absolute page index.
+        imaged_pages = set()
         toc_start_page = -1
         page_content = ""
         handle_pre_toc = True
@@ -433,15 +466,22 @@ class PdfSplitHandle(BaseSplitHandle):
                     text = re.sub(r"(?<!。)\n+", "", text)
                     text = re.sub(r"(?<!.)\n+", "", text)
 
-                    idx = text.find(link_title)
+                    idx = text.find(link_title) if link_title else -1
                     if idx > -1:
                         text = text[idx + len(link_title) :]
 
                     if next_link_title is not None:
-                        idx = text.find(next_link_title)
+                        idx = text.find(next_link_title) if next_link_title else -1
                         if idx > -1:
                             text = text[:idx]
                     chapter_text += text
+
+                    # BUGFIX 2026-10-10: recover illustrations on the internal-link path.
+                    if image_list is not None and p_num not in imaged_pages:
+                        imaged_pages.add(p_num)
+                        images_md = PdfSplitHandle.extract_page_images(doc.pages[p_num], image_list)
+                        if images_md:
+                            chapter_text += images_md + "\n\n"
 
                 # Null characters are not allowed.
                 chapter_text = chapter_text.replace("\0", "")
@@ -600,6 +640,15 @@ class PdfSplitHandle(BaseSplitHandle):
         title = title.replace("\0", "")
         title = re.sub(r"[一二三四五六七八九十\s*]、\s*", "", title)
         title = re.sub(r"第[一二三四五六七八九十]章\s*", "", title)
+        # BUGFIX 2026-10-10: only CJK-style numbering was stripped. Arabic multi-level
+        # numbering ("3.2.1 Creating a datum plane") survived, so once the newline erasure
+        # above had glued the number to the heading text, text.find(title) frequently missed
+        # and the chapter body was never trimmed (the previous section tail leaked in).
+        # Only adopt the stripped form when something is left, so a purely numeric bookmark
+        # title can never degrade into an empty search key.
+        _arabic = re.sub(r"^\s*\d+(?:[.\-．]\d+)*[.\-．、)）]?\s*", "", title)
+        if _arabic.strip():
+            title = _arabic
         return title
 
     def support(self, file, get_buffer):

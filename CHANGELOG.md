@@ -5,6 +5,69 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-10
+
+Bug fixes on the PDF **bookmark (outline) path** - the branch a PDF that has a
+table of contents actually takes, and which had **zero test coverage** until now
+(`outline` occurred once in the whole suite, and every PDF fixture was a
+synthetic page without bookmarks). No other handler changed and no dependency
+was added.
+
+### Fixed
+
+- **The bookmark level was parsed and then thrown away.** `collect_toc` resolves
+  each outline entry's nesting level and `handle_toc` unpacked it as
+  `level, title, start_page` - then never read `level` again. Every entry
+  collapsed to one weight, so a chunk's `title` kept only its leaf heading: a
+  paragraph inside "3.2.1 Creating a datum plane" was titled
+  `Creating a datum plane`, with the enclosing chapter lost. Titles now carry the
+  full ancestor chain, joined with a single space to match the
+  `" ".join(parent_chain)` convention in `chunker.result_tree_to_paragraph`, and
+  still truncated at 256 characters. A single-level outline is unaffected: each
+  entry pops the previous one, so the chain is the entry itself.
+- **Bookmarked PDFs lost every illustration.** Neither `handle_toc` nor
+  `handle_links` called `extract_page_images`, and `handle()` passed them no
+  `image_list`, so any PDF with an outline or internal links produced text only -
+  no `![...](./oss/file/...)` references and nothing for `save_image`. Both paths
+  now recover page images the way `handle_pdf_content` does. Extraction is
+  deduplicated per page, because a parent entry and its first child routinely
+  cover the same page while `extract_page_images` mints a fresh `uuid7` on every
+  call (its own id-based guard can therefore never fire). Each path gets its own
+  list, so a `handle_toc` that declines cannot leak half-registered assets into
+  `handle_links`.
+- **Arabic multi-level numbering was not recognised.** `handle_chapter_title`
+  stripped only CJK-style numbering, so `3.2.1 Creating a datum plane` survived
+  intact. The same pass erases every newline that does not follow a full stop, so
+  the number and the heading frequently end up glued together, the
+  `text.find(title)` lookup missed, and the chapter body was never trimmed - the
+  previous section's tail leaked into the next chunk. The numeric prefix is now
+  stripped as well, but only when something is left afterwards.
+- **An empty search key could wipe a chapter body.** `text.find("")` returns `0`,
+  so a bookmark title that `handle_chapter_title` reduced to nothing made
+  `text[:idx]` truncate the following chapter to empty. Both `handle_toc` and
+  `handle_links` now skip the lookup when the key is empty.
+
+### Known limitation (documented, not fixed)
+
+`chunker.append_table_header_if_cut` cannot fire on the PDF path. It requires a
+chunk whose first line starts with a pipe and whose second line is the `|---`
+separator row, and `handlers/pdf.py` emits no markdown table rows at all - its
+only structural output is the `## ` / `### ` heading prefixes and image
+references. A PDF table split by the length budget therefore gets no header row
+appended to the continuation chunk. Fixing that means detecting tables in a PDF
+text stream, which is a separate project; the limitation is recorded here so the
+table-header guarantee is not over-read for PDF input.
+
+### Tests
+
+- New `tests/test_pdf_outline.py`: 10 tests over a purpose-built multi-page
+  fixture with a nested outline and a real DCTDecode image XObject - ancestor
+  chains, no stale ancestor across siblings, flat-outline back-compat, the
+  single-space join, image recovery, per-page image dedupe, and four
+  `handle_chapter_title` cases including the purely-numeric guard.
+- Suite is now **425 tests** (was 415); `ruff check smart_slice tests scripts
+  examples` is clean.
+
 ## [0.5.1] - 2026-09-30
 
 Benchmark documentation and tooling only - **no library behaviour changes**. The

@@ -110,23 +110,41 @@ a falsifiable negative, error isolation, first-failure-by-index, the serial fast
 path, per-task hooks) and adds the library-level surface around it (width
 derivation, core allocation, the batch API, pickling, the CLI).
 
-Current status: **332 tests** (331 passed, 1 skipped) on Python 3.12. The skip is
-a Linux-only affinity assertion that cannot run on Windows.
+Current status: **425 tests** on Python 3.12, of which 1 is skipped - a Linux-only
+affinity assertion that cannot run on Windows.
 
 ## Keeping the port honest
 
-Because the transform is mechanical and deterministic, "the library behaves like
-the platform" is a checkable property rather than a claim: regeneration plus a
-byte-exact diff against the committed tree is the drift guard. Any difference
-means either
+Because the transform was mechanical and deterministic, "the library behaves like
+the platform" was meant to be a checkable property rather than a claim:
+regenerate, then diff byte-for-byte against the committed tree.
 
-- the platform module changed after this snapshot — re-port deliberately and
-  review the diff; or
-- someone hand-edited a ported file — move the edit into an anchored patch so it
-  stays reproducible.
+**That drift guard is no longer executable.** The generator was removed when this
+package was desensitised for public release, so regeneration cannot be re-run and
+a byte-exact diff against the platform snapshot is no longer obtainable. What
+stays checkable is narrower but real:
+
+- the ported suite (`tests/test_fidelity.py`, `tests/test_full_format.py`,
+  `tests/test_service.py`) keeps the platform's original test bodies and
+  assertions untouched, so the parsing and splitting semantics they pin are still
+  enforced on every run;
+- files carrying the "Derived from the source platform" header are still treated
+  as generated, and a hand-edit is only legitimate if it is recorded in the
+  divergence register below.
 
 Contributors should treat files under `smart_slice/` that carry the
-"Derived from the source platform" header as generated: do not hand-edit them.
+"Derived from the source platform" header as generated: do not hand-edit them
+without adding an entry to the register.
+
+### Divergence register
+
+Deliberate divergences from the platform snapshot in files that still carry the
+generated header. Each exists because the defect was in the snapshot itself and
+the generator can no longer be re-run to carry a fix forward.
+
+| date | file | divergence |
+|------|------|------------|
+| 2026-10-10 | `smart_slice/handlers/pdf.py` | Four fixes on the bookmark / internal-link paths: `handle_toc` now uses the `level` that `collect_toc` already resolves, to build an ancestor-chain title instead of discarding it; both paths extract page images, which neither did before; `handle_chapter_title` also strips Arabic multi-level numbering such as `3.2.1`; and an empty search key no longer truncates a chapter body (`text.find("")` returns `0`). Covered by `tests/test_pdf_outline.py`. See the 0.6.0 changelog entry. |
 The hand-written modules are the public façade (`__init__.py`), `patterns.py`,
 `_config.py`, `_logging.py`, `_i18n.py`, `_uuid.py`, `_markdown.py`,
 `exceptions.py`, `types.py`, `scheduler.py`, and the three package `__init__.py`
